@@ -1,20 +1,49 @@
 package cli
 
-// CollectorSpec represents a parsed --collector flag value.
-// Format: name:key=val,key2=val2
+import (
+	"fmt"
+	"strings"
+)
+
 type CollectorSpec struct {
 	Name   string
 	Params map[string]string
 }
 
-// ParseCollectorSpecs parses a slice of --collector flag values into CollectorSpecs.
-// TODO: implement parsing logic.
 func ParseCollectorSpecs(specs []string) ([]CollectorSpec, error) {
-	return nil, nil
+	var result []CollectorSpec
+	for _, raw := range specs {
+		if raw == "" {
+			continue
+		}
+
+		name := raw
+		params := make(map[string]string)
+
+		if idx := strings.Index(raw, ":"); idx >= 0 {
+			name = raw[:idx]
+			paramStr := raw[idx+1:]
+			for _, kv := range strings.Split(paramStr, ",") {
+				eqIdx := strings.Index(kv, "=")
+				if eqIdx < 0 {
+					return nil, fmt.Errorf("invalid collector param %q: missing = separator", kv)
+				}
+				params[kv[:eqIdx]] = kv[eqIdx+1:]
+			}
+		}
+
+		if name == "" {
+			return nil, fmt.Errorf("invalid collector spec %q: name cannot be empty", raw)
+		}
+
+		result = append(result, CollectorSpec{Name: name, Params: params})
+	}
+	return result, nil
 }
 
-// ValidateCollectors checks that at least one collector is specified unless dry-run is true.
-// TODO: implement validation logic.
 func ValidateCollectors(collectors []CollectorSpec, dryRun bool) error {
+	if !dryRun && len(collectors) == 0 {
+		return fmt.Errorf("at least one --collector is required (or use --dry-run)")
+	}
 	return nil
 }
