@@ -1,6 +1,6 @@
 ---
-completed_phases: [setup]
-current_phase: red
+completed_phases: [setup, red, green]
+current_phase: close
 ---
 
 ## State
@@ -17,3 +17,16 @@ slice_criteria:
   ocm-auth: OCM token resolution from OCM_TOKEN env var then ~/.config/ocm/ocm.json refresh_token fallback; connection builder returns working OCM connection
   cluster-listing-metadata: 12-field ClusterMetadata struct, paginated cluster listing using response.Total(), OCM client behind interface per ADR-0001
   dry-run-integration: --dry-run wired end-to-end: authenticates to OCM, sends size=1 request, prints cluster count; full scan subcommand execution path
+
+## Acceptance Tests
+
+| Slice | Test File | Test Function(s) | RED Failure Reason |
+|-------|-----------|-------------------|--------------------|
+| module-cli-scaffold | internal/cli/cli_test.go | TestScanCommandHelp | scan subcommand not found on root command |
+| collector-spec-parsing | internal/cli/flags_test.go | TestParseCollectorSpecs | returns 0 specs (nil) instead of parsed results; no errors for malformed input |
+| collector-spec-parsing | internal/cli/flags_test.go | TestCollectorRequiredUnlessDryRun | returns nil instead of error when no collectors and not dry-run |
+| ocm-auth | internal/ocm/auth_test.go | TestTokenResolution | returns empty string instead of token; returns nil instead of error |
+| ocm-auth | internal/ocm/auth_test.go | TestParseOCMConfig | returns nil config and nil error instead of parsed config or errors |
+| cluster-listing-metadata | internal/ocm/clusters_test.go | TestListClusters_Pagination | returns 0 clusters, 0 API calls made |
+| cluster-listing-metadata | internal/ocm/clusters_test.go | TestClusterMetadata_Fields | ExtractClusterMetadata returns nil metadata |
+| dry-run-integration | internal/cli/scan_integration_test.go | TestDryRunPrintsClusterCount | scan subcommand missing, --search flag unknown |
