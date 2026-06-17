@@ -1,0 +1,167 @@
+package cli
+
+import (
+	"testing"
+)
+
+// TestParseCollectorSpecs uses table-driven tests to verify parsing of
+// --collector flag values in the format name:key=val,key2=val2.
+func TestParseCollectorSpecs(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     []string
+		want      []CollectorSpec
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:  "simple name only",
+			input: []string{"managed-namespaces"},
+			want: []CollectorSpec{
+				{Name: "managed-namespaces", Params: map[string]string{}},
+			},
+		},
+		{
+			name:  "name with one param",
+			input: []string{"high-restarts:threshold=10"},
+			want: []CollectorSpec{
+				{Name: "high-restarts", Params: map[string]string{"threshold": "10"}},
+			},
+		},
+		{
+			name:  "name with multiple params",
+			input: []string{"managed-namespaces:patterns=openshift-*,kinds=Pods"},
+			want: []CollectorSpec{
+				{Name: "managed-namespaces", Params: map[string]string{
+					"patterns": "openshift-*",
+					"kinds":    "Pods",
+				}},
+			},
+		},
+		{
+			name:      "malformed - missing name (starts with colon)",
+			input:     []string{":key=val"},
+			wantErr:   true,
+			errSubstr: "name",
+		},
+		{
+			name:      "malformed - bad key=val (missing equals)",
+			input:     []string{"collector:badparam"},
+			wantErr:   true,
+			errSubstr: "=",
+		},
+		{
+			name:  "empty string",
+			input: []string{""},
+			want:  nil, // or empty slice — no specs parsed from empty input
+		},
+		{
+			name:  "multiple specs",
+			input: []string{"managed-namespaces", "high-restarts:threshold=10"},
+			want: []CollectorSpec{
+				{Name: "managed-namespaces", Params: map[string]string{}},
+				{Name: "high-restarts", Params: map[string]string{"threshold": "10"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseCollectorSpecs(tt.input)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errSubstr)
+				}
+				if tt.errSubstr != "" && !containsStr(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got: %v", tt.errSubstr, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d specs, want %d", len(got), len(tt.want))
+			}
+
+			for i, wantSpec := range tt.want {
+				gotSpec := got[i]
+				if gotSpec.Name != wantSpec.Name {
+					t.Errorf("spec[%d].Name = %q, want %q", i, gotSpec.Name, wantSpec.Name)
+				}
+				if len(gotSpec.Params) != len(wantSpec.Params) {
+					t.Errorf("spec[%d].Params has %d entries, want %d", i, len(gotSpec.Params), len(wantSpec.Params))
+					continue
+				}
+				for k, v := range wantSpec.Params {
+					if gotSpec.Params[k] != v {
+						t.Errorf("spec[%d].Params[%q] = %q, want %q", i, k, gotSpec.Params[k], v)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestCollectorRequiredUnlessDryRun verifies that validation requires at least
+// one collector unless dry-run mode is enabled.
+func TestCollectorRequiredUnlessDryRun(t *testing.T) {
+	tests := []struct {
+		name       string
+		collectors []CollectorSpec
+		dryRun     bool
+		wantErr    bool
+	}{
+		{
+			name:       "no collectors and not dry-run returns error",
+			collectors: nil,
+			dryRun:     false,
+			wantErr:    true,
+		},
+		{
+			name:       "no collectors and dry-run returns nil",
+			collectors: nil,
+			dryRun:     true,
+			wantErr:    false,
+		},
+		{
+			name: "with collectors and not dry-run returns nil",
+			collectors: []CollectorSpec{
+				{Name: "managed-namespaces", Params: map[string]string{}},
+			},
+			dryRun:  false,
+			wantErr: false,
+		},
+		{
+			name:       "empty slice and not dry-run returns error",
+			collectors: []CollectorSpec{},
+			dryRun:     false,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCollectors(tt.collectors, tt.dryRun)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
+// containsStr is a simple helper to avoid importing strings in tests.
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

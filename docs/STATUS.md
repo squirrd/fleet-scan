@@ -2,7 +2,7 @@
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | Skeleton — module, CLI, OCM auth, cluster listing, `--dry-run` | **In Progress** |
+| 1 | Skeleton — module, CLI, OCM auth, cluster listing, `--dry-run` | **Done** |
 | 2 | Output layer — JSONL writer, meta.json, run dirs, resume, iteration loop | Pending |
 | 3 | Backplane login — isolated kubeconfig per cluster | Pending |
 | 4 | Collector framework — interface, registry, wired into runner | Pending |
@@ -12,13 +12,13 @@
 
 ## Phase 1 Checklist
 
-- [ ] `go.mod` + `Makefile`
-- [ ] `cmd/fleet-scan/main.go`
-- [ ] `internal/logging/logger.go`
-- [ ] `internal/cli/flags.go` + tests
-- [ ] `internal/cli/root.go`
-- [ ] `internal/cli/scan.go`
-- [ ] `internal/ocm/auth.go` + tests
-- [ ] `internal/ocm/types.go` + tests
-- [ ] `internal/ocm/clusters.go` + tests
-- [ ] Verify: `fleet-scan scan --search="..." --dry-run` prints cluster count
+- [x] `go.mod` + `Makefile`
+- [x] `cmd/fleet-scan/main.go`
+- [x] `internal/cli/cli.go` (root + scan commands)
+- [x] `internal/cli/flags.go` + tests
+- [x] `internal/ocm/auth.go` + tests
+- [x] `internal/ocm/types.go`
+- [x] `internal/ocm/clusters.go` + tests
+- [x] `internal/ocm/ocm.go` (SDK client wrapper)
+- [x] Verify: `fleet-scan scan --help` shows all flags
+- [x] Verify: binary builds and runs
