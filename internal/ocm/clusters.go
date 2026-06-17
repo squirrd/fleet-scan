@@ -1,26 +1,81 @@
 package ocm
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"time"
+)
 
-// OCMClient defines the interface for OCM API operations.
-// This enables testing with mocks per ADR-0001.
+const pageSize = 100
+
 type OCMClient interface {
-	// ListClusters returns clusters matching the search query.
-	// page is 1-based, size is the number of results per page.
-	// Returns clusters, total count, and any error.
 	ListClusters(ctx context.Context, search string, page, size int) ([]ClusterMetadata, int, error)
 }
 
-// ListAllClusters paginates through all clusters matching the search query.
-// Uses response.Total() to determine when all pages have been fetched.
-// TODO: implement pagination logic.
 func ListAllClusters(ctx context.Context, client OCMClient, search string) ([]ClusterMetadata, error) {
-	return nil, nil
+	var all []ClusterMetadata
+	page := 1
+
+	for {
+		clusters, total, err := client.ListClusters(ctx, search, page, pageSize)
+		if err != nil {
+			return nil, fmt.Errorf("listing clusters (page %d): %w", page, err)
+		}
+
+		all = append(all, clusters...)
+
+		if len(all) >= total {
+			break
+		}
+		page++
+	}
+
+	return all, nil
 }
 
-// ExtractClusterMetadata extracts the 12 hardcoded metadata fields from a raw
-// cluster data map (as returned by the OCM API).
-// TODO: implement extraction logic.
 func ExtractClusterMetadata(raw map[string]interface{}) (*ClusterMetadata, error) {
-	return nil, nil
+	m := &ClusterMetadata{
+		ID:               getString(raw, "id"),
+		Name:             getString(raw, "name"),
+		ExternalID:       getString(raw, "external_id"),
+		State:            getString(raw, "state"),
+		HealthState:      getString(raw, "health_state"),
+		OpenshiftVersion: getString(raw, "openshift_version"),
+		MultiAZ:          getBool(raw, "multi_az"),
+		Managed:          getBool(raw, "managed"),
+	}
+
+	if nested, ok := raw["product"].(map[string]interface{}); ok {
+		m.Product = getString(nested, "id")
+	}
+	if nested, ok := raw["cloud_provider"].(map[string]interface{}); ok {
+		m.CloudProvider = getString(nested, "id")
+	}
+	if nested, ok := raw["region"].(map[string]interface{}); ok {
+		m.Region = getString(nested, "id")
+	}
+
+	if ts, ok := raw["creation_timestamp"].(string); ok {
+		parsed, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			return nil, fmt.Errorf("parsing creation_timestamp: %w", err)
+		}
+		m.CreationTimestamp = parsed
+	}
+
+	return m, nil
+}
+
+func getString(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func getBool(m map[string]interface{}, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return false
 }
