@@ -1,0 +1,14 @@
+# github.com/squirrd/fleet-scan/internal/output [github.com/squirrd/fleet-scan/internal/output.test]
+internal/output/types_test.go:18:8: undefined: CollectorResult
+internal/output/types_test.go:57:9: undefined: ClusterRecord
+internal/output/types_test.go:59:31: undefined: CollectorResult
+internal/output/types_test.go:104:8: undefined: RunMeta
+internal/output/writer_test.go:23:10: undefined: RunMeta
+internal/output/writer_test.go:30:12: undefined: NewWriter
+internal/output/writer_test.go:53:18: undefined: RunMeta
+internal/output/writer_test.go:62:10: undefined: ClusterRecord
+internal/output/writer_test.go:67:29: undefined: CollectorResult
+internal/output/writer_test.go:69:10: undefined: ClusterRecord
+internal/output/writer_test.go:69:10: too many errors
+FAIL	github.com/squirrd/fleet-scan/internal/output [build failed]
+FAIL
