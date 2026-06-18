@@ -66,6 +66,14 @@ func ExtractClusterMetadata(raw map[string]interface{}) (*ClusterMetadata, error
 	return m, nil
 }
 
+func GetClusterCount(ctx context.Context, client OCMClient, search string) (int, error) {
+	_, total, err := client.ListClusters(ctx, search, 1, 1)
+	if err != nil {
+		return 0, fmt.Errorf("getting cluster count: %w", err)
+	}
+	return total, nil
+}
+
 func getString(m map[string]interface{}, key string) string {
 	if v, ok := m[key].(string); ok {
 		return v
