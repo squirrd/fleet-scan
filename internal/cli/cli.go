@@ -149,9 +149,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	var w *output.Writer
 	if resumePath != "" {
 		meta.ResumedAt = time.Now().UTC()
-		// For resume, we create a new writer pointing at the existing dir.
-		// The writer will append to results.jsonl.
-		w, err = output.NewWriter(filepath.Dir(resumePath), meta)
+		w, err = output.ResumeWriter(resumePath, meta)
 	} else {
 		w, err = output.NewWriter(outputDir, meta)
 	}

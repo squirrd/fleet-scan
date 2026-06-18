@@ -96,6 +96,32 @@ func (w *Writer) Finalize(status string, succeeded, failed, skipped int, dur tim
 	return nil
 }
 
+// ResumeWriter opens an existing run directory for appending. It overwrites
+// meta.json with the new metadata and opens results.jsonl in append mode.
+func ResumeWriter(runDir string, meta RunMeta) (*Writer, error) {
+	if meta.RunID == "" {
+		meta.RunID = filepath.Base(runDir)
+	}
+
+	w := &Writer{
+		runDir: runDir,
+		meta:   meta,
+	}
+
+	if err := w.writeMeta(); err != nil {
+		return nil, fmt.Errorf("writing resume meta.json: %w", err)
+	}
+
+	jsonlPath := filepath.Join(runDir, "results.jsonl")
+	f, err := os.OpenFile(jsonlPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("opening results.jsonl for resume: %w", err)
+	}
+	w.file = f
+
+	return w, nil
+}
+
 // writeMeta marshals the current RunMeta and writes it to meta.json,
 // overwriting any previous content.
 func (w *Writer) writeMeta() error {
