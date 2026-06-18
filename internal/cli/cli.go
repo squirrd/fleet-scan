@@ -2,12 +2,19 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/squirrd/fleet-scan/internal/ocm"
+	"github.com/squirrd/fleet-scan/internal/output"
+	"github.com/squirrd/fleet-scan/internal/runner"
 )
 
 func NewRootCommand() *cobra.Command {
@@ -32,6 +39,7 @@ func newScanCommand() *cobra.Command {
 	cmd.Flags().Bool("dry-run", false, "Run search only, report cluster count")
 	cmd.Flags().Int("cluster-timeout", 120, "Per-cluster timeout in seconds")
 	cmd.Flags().String("output-dir", "./output/", "Output directory for results")
+	cmd.Flags().String("resume", "", "Resume a previous run from the given run directory path")
 	cmd.Flags().Bool("verbose", false, "Enable verbose logging")
 	cmd.Flags().Bool("debug", false, "Enable debug logging")
 
@@ -44,6 +52,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	verbose, _ := cmd.Flags().GetBool("verbose")
 	debug, _ := cmd.Flags().GetBool("debug")
+	resumePath, _ := cmd.Flags().GetString("resume")
+	outputDir, _ := cmd.Flags().GetString("output-dir")
+	clusterTimeoutSec, _ := cmd.Flags().GetInt("cluster-timeout")
 
 	level := slog.LevelWarn
 	if verbose {
@@ -53,6 +64,39 @@ func runScan(cmd *cobra.Command, args []string) error {
 		level = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
+	// Handle --resume mutual exclusion.
+	if resumePath != "" {
+		searchChanged := cmd.Flags().Changed("search")
+		collectorChanged := cmd.Flags().Changed("collector")
+		if searchChanged || collectorChanged {
+			var conflicts []string
+			if searchChanged {
+				conflicts = append(conflicts, "--search")
+			}
+			if collectorChanged {
+				conflicts = append(conflicts, "--collector")
+			}
+			return fmt.Errorf("--resume cannot be combined with %s", strings.Join(conflicts, " and "))
+		}
+	}
+
+	// If resuming, read search and collectors from meta.json.
+	if resumePath != "" {
+		metaPath := filepath.Join(resumePath, "meta.json")
+		metaBytes, err := os.ReadFile(metaPath)
+		if err != nil {
+			return fmt.Errorf("reading meta.json from resume path: %w", err)
+		}
+
+		var prevMeta output.RunMeta
+		if err := json.Unmarshal(metaBytes, &prevMeta); err != nil {
+			return fmt.Errorf("parsing meta.json: %w", err)
+		}
+
+		search = prevMeta.Search
+		collectorRaw = prevMeta.Collectors
+	}
 
 	specs, err := ParseCollectorSpecs(collectorRaw)
 	if err != nil {
@@ -77,9 +121,82 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return runDryRun(cmd, client, search)
 	}
 
-	_ = specs
-	cmd.PrintErrln("scan mode not yet implemented (Phase 2)")
-	return nil
+	// --- Scan mode (Phase 2) ---
+	ctx := context.Background()
+
+	// Get clusters from OCM.
+	clusters, err := ocm.ListAllClusters(ctx, client, search)
+	if err != nil {
+		return err
+	}
+
+	// Build collector spec strings for meta.json.
+	var collectorSpecs []string
+	for _, raw := range collectorRaw {
+		collectorSpecs = append(collectorSpecs, raw)
+	}
+
+	meta := output.RunMeta{
+		Status:                "running",
+		Search:                search,
+		Collectors:            collectorSpecs,
+		ClusterTimeoutSeconds: clusterTimeoutSec,
+		ClustersTotal:         len(clusters),
+		StartedAt:             time.Now().UTC(),
+	}
+
+	// Create writer — either resume into existing dir or create new.
+	var w *output.Writer
+	if resumePath != "" {
+		meta.ResumedAt = time.Now().UTC()
+		// For resume, we create a new writer pointing at the existing dir.
+		// The writer will append to results.jsonl.
+		w, err = output.NewWriter(filepath.Dir(resumePath), meta)
+	} else {
+		w, err = output.NewWriter(outputDir, meta)
+	}
+	if err != nil {
+		return err
+	}
+
+	// If resuming, filter out already-completed clusters.
+	if resumePath != "" {
+		jsonlPath := filepath.Join(resumePath, "results.jsonl")
+		completed, loadErr := output.LoadCompletedSet(jsonlPath)
+		if loadErr == nil {
+			var remaining []ocm.ClusterMetadata
+			for _, c := range clusters {
+				if !completed[c.ID] {
+					remaining = append(remaining, c)
+				}
+			}
+			clusters = remaining
+		}
+	}
+
+	startTime := time.Now()
+	opts := runner.RunOptions{
+		ClusterTimeout: time.Duration(clusterTimeoutSec) * time.Second,
+		Stderr:         cmd.ErrOrStderr(),
+	}
+
+	runErr := runner.Run(ctx, clusters, w, opts)
+
+	// Finalize.
+	status := "completed"
+	if runErr != nil {
+		status = "failed"
+	}
+	dur := time.Since(startTime)
+	succeeded := len(clusters) // stub: all succeed for now
+	failed := 0
+	skipped := 0
+
+	if finalErr := w.Finalize(status, succeeded, failed, skipped, dur); finalErr != nil {
+		return finalErr
+	}
+
+	return runErr
 }
 
 func runDryRun(cmd *cobra.Command, client ocm.OCMClient, search string) error {
