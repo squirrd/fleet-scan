@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/squirrd/fleet-scan/internal/collector"
 	"github.com/squirrd/fleet-scan/internal/ocm"
 	"github.com/squirrd/fleet-scan/internal/output"
 )
@@ -261,12 +262,19 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		}
 	})
 
-	t.Run("login failure captures error in record with login_error key", func(t *testing.T) {
+	t.Run("login failure marks configured collectors as skipped", func(t *testing.T) {
 		clusters := []ocm.ClusterMetadata{
 			{ID: "c1", Name: "cluster-1"},
 		}
 
 		w := &mockWriter{}
+
+		testCollector := &mockCollector{
+			name: "test-col",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
 
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
@@ -274,6 +282,7 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				return "", nil, fmt.Errorf("token expired")
 			},
+			Collectors: []collector.Collector{testCollector},
 		}
 
 		err := Run(context.Background(), clusters, w, opts)
@@ -286,17 +295,16 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		}
 
 		rec := w.records[0]
-		// The record should have a "login_error" entry in cluster_result
-		// with status "skipped" and the error message
-		loginResult, ok := rec.ClusterResult["login_error"]
+		// Each configured collector should be marked "skipped" with the login error.
+		result, ok := rec.ClusterResult["test-col"]
 		if !ok {
-			t.Fatal("expected cluster_result to contain 'login_error' key on login failure")
+			t.Fatal("expected cluster_result to contain 'test-col' key on login failure")
 		}
-		if loginResult.Status != "skipped" {
-			t.Errorf("login_error status = %q, want %q", loginResult.Status, "skipped")
+		if result.Status != "skipped" {
+			t.Errorf("test-col status = %q, want %q", result.Status, "skipped")
 		}
-		if !strings.Contains(loginResult.Error, "token expired") {
-			t.Errorf("login_error error = %q, want it to contain %q", loginResult.Error, "token expired")
+		if !strings.Contains(result.Error, "token expired") {
+			t.Errorf("test-col error = %q, want it to contain %q", result.Error, "token expired")
 		}
 	})
 
@@ -351,6 +359,271 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 			t.Error("expected cleanup to be called even on login failure")
 		}
 	})
+}
+
+// TestCollectorFramework_RunnerWiring_Acceptance verifies that:
+// 1. RunOptions accepts a Collectors field ([]collector.Collector) to run per cluster
+// 2. Runner calls Run on each configured collector per cluster, passing clusterID and kubeconfigPath
+// 3. Successful collector results are captured with status "success" and JSON data in ClusterRecord
+// 4. Collector errors are captured with status "error" and error message, without stopping other collectors
+// 5. When BackplaneLogin is nil, collectors still run (with empty kubeconfigPath)
+// 6. When BackplaneLogin fails, all collectors are marked "skipped" with the login error
+//
+// Acceptance criterion: Runner calls each configured collector per cluster, captures
+// results (success with data or error with message) in ClusterRecord, handles nil
+// backplane-login gracefully.
+//
+// Phase: RED — RunOptions does not have a Collectors field yet.
+func TestCollectorFramework_RunnerWiring_Acceptance(t *testing.T) {
+	t.Run("runs collectors and captures success results", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+		}
+
+		w := &mockWriter{}
+
+		successCollector := &mockCollector{
+			name: "ns-count",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{"count": 42}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			Collectors:     []collector.Collector{successCollector},
+		}
+
+		err := Run(context.Background(), clusters, w, opts)
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+
+		if len(w.records) != 1 {
+			t.Fatalf("expected 1 record, got %d", len(w.records))
+		}
+
+		rec := w.records[0]
+		result, ok := rec.ClusterResult["ns-count"]
+		if !ok {
+			t.Fatal("expected cluster_result to contain 'ns-count' key")
+		}
+		if result.Status != "success" {
+			t.Errorf("collector status = %q, want %q", result.Status, "success")
+		}
+		if string(result.Data) != `{"count": 42}` {
+			t.Errorf("collector data = %s, want %s", result.Data, `{"count": 42}`)
+		}
+	})
+
+	t.Run("captures collector error without stopping others", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+		}
+
+		w := &mockWriter{}
+
+		failCollector := &mockCollector{
+			name: "fail-collector",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return nil, fmt.Errorf("connection refused")
+			},
+		}
+		successCollector := &mockCollector{
+			name: "ok-collector",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{"ok": true}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			Collectors:     []collector.Collector{failCollector, successCollector},
+		}
+
+		err := Run(context.Background(), clusters, w, opts)
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+
+		if len(w.records) != 1 {
+			t.Fatalf("expected 1 record, got %d", len(w.records))
+		}
+
+		rec := w.records[0]
+
+		// Failed collector should be captured with status "error".
+		failResult, ok := rec.ClusterResult["fail-collector"]
+		if !ok {
+			t.Fatal("expected cluster_result to contain 'fail-collector' key")
+		}
+		if failResult.Status != "error" {
+			t.Errorf("fail-collector status = %q, want %q", failResult.Status, "error")
+		}
+		if !strings.Contains(failResult.Error, "connection refused") {
+			t.Errorf("fail-collector error = %q, want it to contain %q", failResult.Error, "connection refused")
+		}
+
+		// Successful collector should still have run.
+		okResult, ok := rec.ClusterResult["ok-collector"]
+		if !ok {
+			t.Fatal("expected cluster_result to contain 'ok-collector' key")
+		}
+		if okResult.Status != "success" {
+			t.Errorf("ok-collector status = %q, want %q", okResult.Status, "success")
+		}
+	})
+
+	t.Run("nil BackplaneLogin still runs collectors", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+		}
+
+		w := &mockWriter{}
+
+		var receivedKubeconfigPath string
+		pathCollector := &mockCollector{
+			name: "path-checker",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				receivedKubeconfigPath = kubeconfigPath
+				return json.RawMessage(`{"checked": true}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			BackplaneLogin: nil, // no backplane login configured
+			Collectors:     []collector.Collector{pathCollector},
+		}
+
+		err := Run(context.Background(), clusters, w, opts)
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+
+		if len(w.records) != 1 {
+			t.Fatalf("expected 1 record, got %d", len(w.records))
+		}
+
+		// Collector should have run with empty kubeconfig path.
+		if receivedKubeconfigPath != "" {
+			t.Errorf("expected empty kubeconfigPath with nil BackplaneLogin, got %q", receivedKubeconfigPath)
+		}
+
+		result, ok := w.records[0].ClusterResult["path-checker"]
+		if !ok {
+			t.Fatal("expected cluster_result to contain 'path-checker' key")
+		}
+		if result.Status != "success" {
+			t.Errorf("collector status = %q, want %q", result.Status, "success")
+		}
+	})
+
+	t.Run("backplane failure marks all collectors as skipped", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+		}
+
+		w := &mockWriter{}
+
+		collectorRan := false
+		testCollector := &mockCollector{
+			name: "should-not-run",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				collectorRan = true
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
+				return "", nil, fmt.Errorf("backplane: no route to host")
+			},
+			Collectors: []collector.Collector{testCollector},
+		}
+
+		err := Run(context.Background(), clusters, w, opts)
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+
+		if collectorRan {
+			t.Error("collector should not have run when backplane login failed")
+		}
+
+		if len(w.records) != 1 {
+			t.Fatalf("expected 1 record, got %d", len(w.records))
+		}
+
+		rec := w.records[0]
+		result, ok := rec.ClusterResult["should-not-run"]
+		if !ok {
+			t.Fatal("expected cluster_result to contain 'should-not-run' key for skipped collector")
+		}
+		if result.Status != "skipped" {
+			t.Errorf("collector status = %q, want %q", result.Status, "skipped")
+		}
+		if !strings.Contains(result.Error, "backplane: no route to host") {
+			t.Errorf("collector error = %q, want it to contain the login error", result.Error)
+		}
+	})
+
+	t.Run("passes kubeconfigPath from login to collectors", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+		}
+
+		w := &mockWriter{}
+
+		var receivedPath string
+		pathCollector := &mockCollector{
+			name: "path-verifier",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				receivedPath = kubeconfigPath
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
+				return "/tmp/kubeconfig-" + clusterID, func() {}, nil
+			},
+			Collectors: []collector.Collector{pathCollector},
+		}
+
+		err := Run(context.Background(), clusters, w, opts)
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+
+		if receivedPath != "/tmp/kubeconfig-c1" {
+			t.Errorf("collector received kubeconfigPath = %q, want %q", receivedPath, "/tmp/kubeconfig-c1")
+		}
+	})
+}
+
+// mockCollector implements collector.Collector for testing runner wiring.
+type mockCollector struct {
+	name  string
+	runFn func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error)
+}
+
+func (m *mockCollector) Name() string { return m.name }
+
+func (m *mockCollector) Configure(params map[string]string) error { return nil }
+
+func (m *mockCollector) Run(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+	if m.runFn != nil {
+		return m.runFn(ctx, clusterID, kubeconfigPath)
+	}
+	return json.RawMessage(`{}`), nil
 }
 
 // TestBackplaneLogin_RunnerLoginIntegration_Acceptance verifies that:

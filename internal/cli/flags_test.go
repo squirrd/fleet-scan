@@ -1,7 +1,12 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
+
+	"github.com/squirrd/fleet-scan/internal/collector"
 )
 
 // TestParseCollectorSpecs uses table-driven tests to verify parsing of
@@ -109,6 +114,14 @@ func TestParseCollectorSpecs(t *testing.T) {
 // TestCollectorRequiredUnlessDryRun verifies that validation requires at least
 // one collector unless dry-run mode is enabled.
 func TestCollectorRequiredUnlessDryRun(t *testing.T) {
+	t.Cleanup(func() { collector.ResetRegistry() })
+
+	// Register a stub so that "managed-namespaces" passes the registry lookup.
+	collector.ResetRegistry()
+	collector.Register("managed-namespaces", func() collector.Collector {
+		return &configTracker{name: "managed-namespaces"}
+	})
+
 	tests := []struct {
 		name       string
 		collectors []CollectorSpec
@@ -154,6 +167,120 @@ func TestCollectorRequiredUnlessDryRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCollectorFramework_CliValidation_Acceptance verifies that:
+// 1. ValidateCollectors checks each collector name against the registry
+// 2. Unknown collector names cause ValidateCollectors to return an error naming the unknown collector
+// 3. Known collectors pass validation and have Configure called with their parsed params
+// 4. Configure errors are surfaced by ValidateCollectors
+//
+// Acceptance criterion: ValidateCollectors rejects unknown collector names by
+// checking the registry; Configure is called with parsed params before the run starts.
+//
+// Phase: RED — ValidateCollectors does not yet check the registry.
+func TestCollectorFramework_CliValidation_Acceptance(t *testing.T) {
+	t.Cleanup(func() { collector.ResetRegistry() })
+
+	t.Run("rejects unknown collector name", func(t *testing.T) {
+		collector.ResetRegistry()
+
+		specs := []CollectorSpec{
+			{Name: "nonexistent-collector", Params: map[string]string{}},
+		}
+
+		err := ValidateCollectors(specs, false)
+		if err == nil {
+			t.Fatal("expected error for unknown collector, got nil")
+		}
+		if !containsStr(err.Error(), "nonexistent-collector") {
+			t.Errorf("error should mention the unknown collector name, got: %v", err)
+		}
+	})
+
+	t.Run("accepts known collector and calls Configure", func(t *testing.T) {
+		collector.ResetRegistry()
+
+		var configuredParams map[string]string
+		collector.Register("known-collector", func() collector.Collector {
+			return &configTracker{
+				name:     "known-collector",
+				onConfig: func(p map[string]string) { configuredParams = p },
+			}
+		})
+
+		specs := []CollectorSpec{
+			{Name: "known-collector", Params: map[string]string{"key": "val"}},
+		}
+
+		err := ValidateCollectors(specs, false)
+		if err != nil {
+			t.Fatalf("ValidateCollectors returned error for known collector: %v", err)
+		}
+
+		// Configure must have been called with the parsed params.
+		if configuredParams == nil {
+			t.Fatal("Configure was not called on the collector")
+		}
+		if configuredParams["key"] != "val" {
+			t.Errorf("Configure params[key] = %q, want %q", configuredParams["key"], "val")
+		}
+	})
+
+	t.Run("surfaces Configure error", func(t *testing.T) {
+		collector.ResetRegistry()
+
+		collector.Register("bad-config", func() collector.Collector {
+			return &configTracker{
+				name:      "bad-config",
+				configErr: "invalid param: threshold must be numeric",
+			}
+		})
+
+		specs := []CollectorSpec{
+			{Name: "bad-config", Params: map[string]string{"threshold": "abc"}},
+		}
+
+		err := ValidateCollectors(specs, false)
+		if err == nil {
+			t.Fatal("expected error from Configure failure, got nil")
+		}
+		if !containsStr(err.Error(), "threshold must be numeric") {
+			t.Errorf("error should contain Configure error message, got: %v", err)
+		}
+	})
+
+	t.Run("dry-run with no collectors still passes", func(t *testing.T) {
+		collector.ResetRegistry()
+
+		err := ValidateCollectors(nil, true)
+		if err != nil {
+			t.Errorf("dry-run with no collectors should pass, got: %v", err)
+		}
+	})
+}
+
+// configTracker is a test helper that records Configure calls.
+type configTracker struct {
+	name      string
+	configErr string
+	onConfig  func(map[string]string)
+}
+
+func (c *configTracker) Name() string { return c.name }
+
+func (c *configTracker) Configure(params map[string]string) error {
+	if c.onConfig != nil {
+		c.onConfig(params)
+	}
+	if c.configErr != "" {
+		return fmt.Errorf("%s", c.configErr)
+	}
+	return nil
+}
+
+func (c *configTracker) Run(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
 }
 
 // containsStr is a simple helper to avoid importing strings in tests.

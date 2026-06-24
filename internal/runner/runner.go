@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/squirrd/fleet-scan/internal/collector"
 	"github.com/squirrd/fleet-scan/internal/ocm"
 	"github.com/squirrd/fleet-scan/internal/output"
 )
@@ -24,10 +25,12 @@ type RunOptions struct {
 	ClusterTimeout time.Duration
 	Stderr         io.Writer
 	BackplaneLogin BackplaneLoginFunc
+	Collectors     []collector.Collector
 }
 
-// Run iterates over clusters, writing a stub ClusterRecord for each.
-// It prints [N/Total] progress to opts.Stderr and respects context cancellation.
+// Run iterates over clusters, runs configured collectors against each, and writes
+// a ClusterRecord per cluster. It prints [N/Total] progress to opts.Stderr and
+// respects context cancellation.
 func Run(ctx context.Context, clusters []ocm.ClusterMetadata, w RecordWriter, opts RunOptions) error {
 	total := len(clusters)
 
@@ -52,24 +55,42 @@ func Run(ctx context.Context, clusters []ocm.ClusterMetadata, w RecordWriter, op
 
 		// Backplane login (if configured).
 		var clusterCleanup func()
+		var kubeconfigPath string
 		loginFailed := false
 		if opts.BackplaneLogin != nil {
-			kubeconfigPath, cleanup, loginErr := opts.BackplaneLogin(clusterCtx, cluster.ID)
+			kp, cleanup, loginErr := opts.BackplaneLogin(clusterCtx, cluster.ID)
 			clusterCleanup = cleanup
 			if loginErr != nil {
 				loginFailed = true
-				rec.ClusterResult["login_error"] = output.CollectorResult{
-					Status: "skipped",
-					Error:  loginErr.Error(),
+				// Mark every configured collector as skipped.
+				for _, c := range opts.Collectors {
+					rec.ClusterResult[c.Name()] = output.CollectorResult{
+						Status: "skipped",
+						Error:  loginErr.Error(),
+					}
 				}
 			} else {
-				// kubeconfigPath available for future collector use.
-				_ = kubeconfigPath
+				kubeconfigPath = kp
 			}
 		}
 
-		// Skip collector execution on login failure (future: run collectors here).
-		_ = loginFailed
+		// Run collectors (unless login failed).
+		if !loginFailed {
+			for _, c := range opts.Collectors {
+				data, runErr := c.Run(clusterCtx, cluster.ID, kubeconfigPath)
+				if runErr != nil {
+					rec.ClusterResult[c.Name()] = output.CollectorResult{
+						Status: "error",
+						Error:  runErr.Error(),
+					}
+				} else {
+					rec.ClusterResult[c.Name()] = output.CollectorResult{
+						Status: "success",
+						Data:   data,
+					}
+				}
+			}
+		}
 
 		if err := w.WriteRecord(rec); err != nil {
 			if clusterCleanup != nil {
@@ -86,9 +107,6 @@ func Run(ctx context.Context, clusters []ocm.ClusterMetadata, w RecordWriter, op
 
 		// Cancel the per-cluster context (we're done with this cluster).
 		cancel()
-
-		// Check the cluster context for timeout (for future use when collectors run).
-		_ = clusterCtx
 	}
 
 	return nil
