@@ -52,12 +52,11 @@ func Run(ctx context.Context, clusters []ocm.ClusterMetadata, w RecordWriter, op
 		}
 
 		// Backplane login (if configured).
+		var clusterCleanup func()
 		loginFailed := false
 		if opts.BackplaneLogin != nil {
 			kubeconfigPath, cleanup, loginErr := opts.BackplaneLogin(cluster.ID)
-			if cleanup != nil {
-				defer cleanup()
-			}
+			clusterCleanup = cleanup
 			if loginErr != nil {
 				loginFailed = true
 				rec.ClusterResult["login_error"] = output.CollectorResult{
@@ -74,8 +73,16 @@ func Run(ctx context.Context, clusters []ocm.ClusterMetadata, w RecordWriter, op
 		_ = loginFailed
 
 		if err := w.WriteRecord(rec); err != nil {
+			if clusterCleanup != nil {
+				clusterCleanup()
+			}
 			cancel()
 			return fmt.Errorf("writing record for cluster %s: %w", cluster.ID, err)
+		}
+
+		// Clean up kubeconfig for this cluster before moving to the next one.
+		if clusterCleanup != nil {
+			clusterCleanup()
 		}
 
 		// Cancel the per-cluster context (we're done with this cluster).
