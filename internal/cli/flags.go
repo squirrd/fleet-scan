@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"strings"
+
+	"github.com/squirrd/fleet-scan/internal/collector"
 )
 
 type CollectorSpec struct {
@@ -45,5 +47,16 @@ func ValidateCollectors(collectors []CollectorSpec, dryRun bool) error {
 	if !dryRun && len(collectors) == 0 {
 		return fmt.Errorf("at least one --collector is required (or use --dry-run)")
 	}
+
+	for _, spec := range collectors {
+		c, err := collector.Get(spec.Name)
+		if err != nil {
+			return fmt.Errorf("unknown collector %q", spec.Name)
+		}
+		if err := c.Configure(spec.Params); err != nil {
+			return fmt.Errorf("collector %q configuration error: %w", spec.Name, err)
+		}
+	}
+
 	return nil
 }

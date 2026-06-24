@@ -262,12 +262,19 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		}
 	})
 
-	t.Run("login failure captures error in record with login_error key", func(t *testing.T) {
+	t.Run("login failure marks configured collectors as skipped", func(t *testing.T) {
 		clusters := []ocm.ClusterMetadata{
 			{ID: "c1", Name: "cluster-1"},
 		}
 
 		w := &mockWriter{}
+
+		testCollector := &mockCollector{
+			name: "test-col",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
 
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
@@ -275,6 +282,7 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				return "", nil, fmt.Errorf("token expired")
 			},
+			Collectors: []collector.Collector{testCollector},
 		}
 
 		err := Run(context.Background(), clusters, w, opts)
@@ -287,17 +295,16 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		}
 
 		rec := w.records[0]
-		// The record should have a "login_error" entry in cluster_result
-		// with status "skipped" and the error message
-		loginResult, ok := rec.ClusterResult["login_error"]
+		// Each configured collector should be marked "skipped" with the login error.
+		result, ok := rec.ClusterResult["test-col"]
 		if !ok {
-			t.Fatal("expected cluster_result to contain 'login_error' key on login failure")
+			t.Fatal("expected cluster_result to contain 'test-col' key on login failure")
 		}
-		if loginResult.Status != "skipped" {
-			t.Errorf("login_error status = %q, want %q", loginResult.Status, "skipped")
+		if result.Status != "skipped" {
+			t.Errorf("test-col status = %q, want %q", result.Status, "skipped")
 		}
-		if !strings.Contains(loginResult.Error, "token expired") {
-			t.Errorf("login_error error = %q, want it to contain %q", loginResult.Error, "token expired")
+		if !strings.Contains(result.Error, "token expired") {
+			t.Errorf("test-col error = %q, want it to contain %q", result.Error, "token expired")
 		}
 	})
 

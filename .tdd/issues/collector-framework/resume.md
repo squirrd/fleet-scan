@@ -1,6 +1,6 @@
 ---
-completed_phases: [setup, red]
-current_phase: green
+completed_phases: [setup, red, green]
+current_phase: close
 ---
 
 ## State
@@ -11,6 +11,8 @@ feature_summary: Define Collector interface, registry with init()-based auto-reg
 source: roadmap-item
 language: go
 slices: ["interface-and-registry", "cli-validation", "runner-wiring"]
+completed_slices: ["interface-and-registry", "cli-validation", "runner-wiring"]
+current_slice: done
 slice_criteria:
   interface-and-registry: Collector interface (Name/Configure/Run) and registry (Register/Get/List) exist with proper error handling for duplicate and unknown names
   cli-validation: ValidateCollectors rejects unknown collector names by checking the registry; Configure is called with parsed params before the run starts
@@ -19,3 +21,4 @@ acceptance_tests:
   interface-and-registry: internal/collector/registry_test.go::TestCollectorFramework_InterfaceAndRegistry_Acceptance
   cli-validation: internal/cli/flags_test.go::TestCollectorFramework_CliValidation_Acceptance
   runner-wiring: internal/runner/runner_test.go::TestCollectorFramework_RunnerWiring_Acceptance
+units_added: 0

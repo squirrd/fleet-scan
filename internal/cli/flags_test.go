@@ -114,6 +114,14 @@ func TestParseCollectorSpecs(t *testing.T) {
 // TestCollectorRequiredUnlessDryRun verifies that validation requires at least
 // one collector unless dry-run mode is enabled.
 func TestCollectorRequiredUnlessDryRun(t *testing.T) {
+	t.Cleanup(func() { collector.ResetRegistry() })
+
+	// Register a stub so that "managed-namespaces" passes the registry lookup.
+	collector.ResetRegistry()
+	collector.Register("managed-namespaces", func() collector.Collector {
+		return &configTracker{name: "managed-namespaces"}
+	})
+
 	tests := []struct {
 		name       string
 		collectors []CollectorSpec
@@ -266,7 +274,7 @@ func (c *configTracker) Configure(params map[string]string) error {
 		c.onConfig(params)
 	}
 	if c.configErr != "" {
-		return fmt.Errorf(c.configErr)
+		return fmt.Errorf("%s", c.configErr)
 	}
 	return nil
 }
