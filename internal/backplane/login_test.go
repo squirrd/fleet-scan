@@ -267,3 +267,116 @@ func TestLogin_CleanupRemovesFile(t *testing.T) {
 		cleanup()
 	})
 }
+
+// backwards_compatibility: tests public API contract
+//
+// TestMakeBackplaneLoginFunc tests that MakeBackplaneLoginFunc returns a
+// non-nil function that delegates to Login with the bound kubeconfigDir.
+func TestMakeBackplaneLoginFunc(t *testing.T) {
+	t.Run("returns a non-nil function", func(t *testing.T) {
+		kubeconfigDir := t.TempDir()
+
+		loginFunc := MakeBackplaneLoginFunc(kubeconfigDir)
+		if loginFunc == nil {
+			t.Fatal("expected MakeBackplaneLoginFunc to return a non-nil function")
+		}
+	})
+
+	t.Run("returned function delegates to Login with bound kubeconfigDir", func(t *testing.T) {
+		kubeconfigDir := t.TempDir()
+
+		// Mock commandRunner to capture what Login receives.
+		var capturedEnv []string
+		var capturedArgs []string
+
+		origRunner := commandRunner
+		t.Cleanup(func() { commandRunner = origRunner })
+		commandRunner = func(name string, args []string, env []string) error {
+			capturedArgs = args
+			capturedEnv = env
+			return nil
+		}
+
+		loginFunc := MakeBackplaneLoginFunc(kubeconfigDir)
+		kubeconfigPath, cleanup, err := loginFunc("cluster-xyz")
+		if err != nil {
+			t.Fatalf("loginFunc returned error: %v", err)
+		}
+		defer cleanup()
+
+		// Verify the clusterID was passed through to the command.
+		wantArgs := []string{"backplane", "login", "cluster-xyz"}
+		if len(capturedArgs) != len(wantArgs) {
+			t.Fatalf("args = %v, want %v", capturedArgs, wantArgs)
+		}
+		for i, want := range wantArgs {
+			if capturedArgs[i] != want {
+				t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+			}
+		}
+
+		// Verify KUBECONFIG points into the bound kubeconfigDir.
+		foundKubeconfig := false
+		for _, e := range capturedEnv {
+			if strings.HasPrefix(e, "KUBECONFIG=") {
+				foundKubeconfig = true
+				val := strings.TrimPrefix(e, "KUBECONFIG=")
+				dir := filepath.Dir(val)
+				if dir != kubeconfigDir {
+					t.Errorf("KUBECONFIG dir = %q, want %q", dir, kubeconfigDir)
+				}
+				if val != kubeconfigPath {
+					t.Errorf("KUBECONFIG = %q, want kubeconfigPath %q", val, kubeconfigPath)
+				}
+			}
+		}
+		if !foundKubeconfig {
+			t.Error("KUBECONFIG env var not found in command environment")
+		}
+	})
+
+	t.Run("different kubeconfigDirs produce independent functions", func(t *testing.T) {
+		dir1 := t.TempDir()
+		dir2 := t.TempDir()
+
+		origRunner := commandRunner
+		t.Cleanup(func() { commandRunner = origRunner })
+
+		var lastKubeconfigPath string
+		commandRunner = func(name string, args []string, env []string) error {
+			for _, e := range env {
+				if strings.HasPrefix(e, "KUBECONFIG=") {
+					lastKubeconfigPath = strings.TrimPrefix(e, "KUBECONFIG=")
+				}
+			}
+			return nil
+		}
+
+		fn1 := MakeBackplaneLoginFunc(dir1)
+		fn2 := MakeBackplaneLoginFunc(dir2)
+
+		_, cleanup1, err := fn1("cluster-a")
+		if err != nil {
+			t.Fatalf("fn1 returned error: %v", err)
+		}
+		defer cleanup1()
+		path1 := lastKubeconfigPath
+
+		_, cleanup2, err := fn2("cluster-a")
+		if err != nil {
+			t.Fatalf("fn2 returned error: %v", err)
+		}
+		defer cleanup2()
+		path2 := lastKubeconfigPath
+
+		if filepath.Dir(path1) != dir1 {
+			t.Errorf("fn1 kubeconfig dir = %q, want %q", filepath.Dir(path1), dir1)
+		}
+		if filepath.Dir(path2) != dir2 {
+			t.Errorf("fn2 kubeconfig dir = %q, want %q", filepath.Dir(path2), dir2)
+		}
+		if path1 == path2 {
+			t.Errorf("expected different kubeconfig paths for different dirs, got same: %q", path1)
+		}
+	})
+}

@@ -19,6 +19,16 @@ func defaultCommandRunner(name string, args []string, env []string) error {
 	return cmd.Run()
 }
 
+// MakeBackplaneLoginFunc returns a closure that binds kubeconfigDir to Login,
+// producing a function matching the runner.BackplaneLoginFunc signature:
+//
+//	func(clusterID string) (kubeconfigPath string, cleanup func(), err error)
+func MakeBackplaneLoginFunc(kubeconfigDir string) func(clusterID string) (string, func(), error) {
+	return func(clusterID string) (string, func(), error) {
+		return Login(clusterID, kubeconfigDir)
+	}
+}
+
 // Login shell-execs `ocm backplane login <clusterID>` with an isolated
 // kubeconfig file in kubeconfigDir. It returns the path to the kubeconfig,
 // a cleanup function that removes it, and any error.
