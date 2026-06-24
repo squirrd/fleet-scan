@@ -70,13 +70,16 @@ Add JSONL writer, meta.json, run directories, resume support, and the per-cluste
 
 Add isolated backplane login per cluster with temp kubeconfig.
 
-**File:** `internal/backplane/login.go`
+**Files:** `internal/backplane/login.go`, `internal/runner/runner.go` (add login step), `internal/cli/cli.go` (wire login into RunOptions)
 
 **Key details:**
 - `Login()` returns `(kubeconfigPath, cleanup func(), error)`
-- Creates temp file, sets `KUBECONFIG` env var on subprocess
-- On failure: all collectors marked `"status": "skipped"` with error message
-- Per-cluster timeout via `context.WithTimeout`
+- Shell exec via `exec.CommandContext(ctx, "ocm", "backplane", "login", clusterID, "--kube-path", path)` — uses context for timeout/cancellation
+- Kubeconfigs stored in `<run-dir>/kubeconfigs/` (not system temp dir) — self-contained, debuggable; subdirectory created via `os.MkdirAll` on first login call
+- `BackplaneLogin func(ctx, clusterID) (string, func(), error)` injected as a function field on `RunOptions` — nil means skip login (backward compatible with existing tests)
+- On failure: write a record with all collectors marked `"status": "skipped"` with error, continue to next cluster
+- Cleanup deferred per-cluster inside the runner loop — kubeconfig file removed after collectors (or stub) finish
+- POC: minimal error handling on the shell exec — capture combined output for the skip record but no stderr parsing
 
 **Verify:** Run against a real cluster, confirm kubeconfig isolation and temp file cleanup
 

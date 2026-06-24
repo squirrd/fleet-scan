@@ -1,0 +1,23 @@
+# Build output
+bin/
+fleet-scan
+
+# Local scratch / investigation
+local/
+
+# IDE / editor
+.obsidian/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+
+# Test / debug output
+output/
+
+# TDD skill state
+.tdd/

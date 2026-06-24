@@ -1,7 +1,0 @@
-# github.com/squirrd/fleet-scan/internal/output [github.com/squirrd/fleet-scan/internal/output.test]
-internal/output/types_test.go:18:8: undefined: CollectorResult
-internal/output/types_test.go:57:9: undefined: ClusterRecord
-internal/output/types_test.go:59:31: undefined: CollectorResult
-internal/output/types_test.go:104:8: undefined: RunMeta
-FAIL	github.com/squirrd/fleet-scan/internal/output [build failed]
-FAIL
