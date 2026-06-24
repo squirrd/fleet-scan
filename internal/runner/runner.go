@@ -17,8 +17,7 @@ type RecordWriter interface {
 }
 
 // BackplaneLoginFunc is the signature for the backplane login function.
-// It takes a clusterID and returns the kubeconfigPath, a cleanup function, and an error.
-type BackplaneLoginFunc func(clusterID string) (kubeconfigPath string, cleanup func(), err error)
+type BackplaneLoginFunc func(ctx context.Context, clusterID string) (kubeconfigPath string, cleanup func(), err error)
 
 // RunOptions configures the runner loop.
 type RunOptions struct {
@@ -55,7 +54,7 @@ func Run(ctx context.Context, clusters []ocm.ClusterMetadata, w RecordWriter, op
 		var clusterCleanup func()
 		loginFailed := false
 		if opts.BackplaneLogin != nil {
-			kubeconfigPath, cleanup, loginErr := opts.BackplaneLogin(cluster.ID)
+			kubeconfigPath, cleanup, loginErr := opts.BackplaneLogin(clusterCtx, cluster.ID)
 			clusterCleanup = cleanup
 			if loginErr != nil {
 				loginFailed = true

@@ -151,7 +151,7 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
 			Stderr:         new(bytes.Buffer),
-			BackplaneLogin: func(clusterID string) (string, func(), error) {
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				loginIDs = append(loginIDs, clusterID)
 				return "/tmp/kube-" + clusterID, func() {}, nil
 			},
@@ -192,7 +192,7 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
 			Stderr:         new(bytes.Buffer),
-			BackplaneLogin: func(clusterID string) (string, func(), error) {
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				return "/tmp/kube-" + clusterID, func() {
 					cleanupOrder = append(cleanupOrder, clusterID)
 				}, nil
@@ -230,7 +230,7 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
 			Stderr:         new(bytes.Buffer),
-			BackplaneLogin: func(clusterID string) (string, func(), error) {
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				if clusterID == "fail1" {
 					return "", nil, fmt.Errorf("backplane: no route to host")
 				}
@@ -271,7 +271,7 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
 			Stderr:         new(bytes.Buffer),
-			BackplaneLogin: func(clusterID string) (string, func(), error) {
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				return "", nil, fmt.Errorf("token expired")
 			},
 		}
@@ -310,7 +310,7 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
 			Stderr:         new(bytes.Buffer),
-			BackplaneLogin: func(clusterID string) (string, func(), error) {
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				// Login failure returns nil cleanup
 				return "", nil, fmt.Errorf("login failed")
 			},
@@ -337,7 +337,7 @@ func TestRun_BackplaneLogin_Unit(t *testing.T) {
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
 			Stderr:         new(bytes.Buffer),
-			BackplaneLogin: func(clusterID string) (string, func(), error) {
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				return "", func() { cleanupCalled = true }, fmt.Errorf("partial failure")
 			},
 		}
@@ -385,7 +385,7 @@ func TestBackplaneLogin_RunnerLoginIntegration_Acceptance(t *testing.T) {
 			Stderr:         stderr,
 			// BackplaneLogin is a function field that does not exist yet.
 			// This will cause a compilation error (RED).
-			BackplaneLogin: func(clusterID string) (string, func(), error) {
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				loginCalled = true
 				return "/tmp/fake-kubeconfig", func() { cleanupCalled = true }, nil
 			},
@@ -420,7 +420,7 @@ func TestBackplaneLogin_RunnerLoginIntegration_Acceptance(t *testing.T) {
 		opts := RunOptions{
 			ClusterTimeout: 30 * time.Second,
 			Stderr:         stderr,
-			BackplaneLogin: func(clusterID string) (string, func(), error) {
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
 				return "", nil, fmt.Errorf("backplane login failed: connection refused")
 			},
 		}
