@@ -16,10 +16,15 @@ type RecordWriter interface {
 	Finalize(status string, succeeded, failed, skipped int, dur time.Duration) error
 }
 
+// BackplaneLoginFunc is the signature for the backplane login function.
+// It takes a clusterID and returns the kubeconfigPath, a cleanup function, and an error.
+type BackplaneLoginFunc func(clusterID string) (kubeconfigPath string, cleanup func(), err error)
+
 // RunOptions configures the runner loop.
 type RunOptions struct {
 	ClusterTimeout time.Duration
 	Stderr         io.Writer
+	BackplaneLogin BackplaneLoginFunc
 }
 
 // Run iterates over clusters, writing a stub ClusterRecord for each.
@@ -41,11 +46,32 @@ func Run(ctx context.Context, clusters []ocm.ClusterMetadata, w RecordWriter, op
 			fmt.Fprintf(opts.Stderr, "[%d/%d] %s (%s)\n", i+1, total, cluster.Name, cluster.ID)
 		}
 
-		// Write stub record.
 		rec := output.ClusterRecord{
 			ClusterMetadata: cluster,
 			ClusterResult:   map[string]output.CollectorResult{},
 		}
+
+		// Backplane login (if configured).
+		loginFailed := false
+		if opts.BackplaneLogin != nil {
+			kubeconfigPath, cleanup, loginErr := opts.BackplaneLogin(cluster.ID)
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if loginErr != nil {
+				loginFailed = true
+				rec.ClusterResult["login_error"] = output.CollectorResult{
+					Status: "skipped",
+					Error:  loginErr.Error(),
+				}
+			} else {
+				// kubeconfigPath available for future collector use.
+				_ = kubeconfigPath
+			}
+		}
+
+		// Skip collector execution on login failure (future: run collectors here).
+		_ = loginFailed
 
 		if err := w.WriteRecord(rec); err != nil {
 			cancel()
