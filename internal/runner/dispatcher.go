@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/squirrd/fleet-scan/internal/ocm"
 	"github.com/squirrd/fleet-scan/internal/output"
@@ -189,5 +190,29 @@ func (sh *SignalHandler) Context() context.Context {
 // Stop cancels the derived context and cleans up.
 func (sh *SignalHandler) Stop() {
 	sh.cancel()
+}
+
+// SummaryLine returns a compact summary string for a completed run.
+// Format: "Done: N clusters (X ok, Y error, Z skipped) in <dur> -> <dir>/"
+func (d *Dispatcher) SummaryLine(total int, dur time.Duration, outputDir string) string {
+	return fmt.Sprintf("Done: %d clusters (%d ok, %d error, %d skipped) in %s -> %s/",
+		total, d.Succeeded(), d.Failed(), d.Skipped(), formatDuration(dur), outputDir)
+}
+
+// InterruptedSummaryLine returns a compact summary string for an interrupted run.
+// Format: "Interrupted: N clusters (X ok, Y error, Z skipped) in <dur> -> <dir>/"
+func (d *Dispatcher) InterruptedSummaryLine(total int, dur time.Duration, outputDir string) string {
+	return fmt.Sprintf("Interrupted: %d clusters (%d ok, %d error, %d skipped) in %s -> %s/",
+		total, d.Succeeded(), d.Failed(), d.Skipped(), formatDuration(dur), outputDir)
+}
+
+// formatDuration formats a duration in a human-readable way.
+func formatDuration(dur time.Duration) string {
+	if dur < time.Minute {
+		return fmt.Sprintf("%.1fs", dur.Seconds())
+	}
+	m := int(dur.Minutes())
+	s := int(dur.Seconds()) % 60
+	return fmt.Sprintf("%dm%02ds", m, s)
 }
 
