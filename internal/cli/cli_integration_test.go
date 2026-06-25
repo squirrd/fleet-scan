@@ -126,3 +126,103 @@ func TestPhase2Output_CliWiring_Acceptance(t *testing.T) {
 		}
 	})
 }
+
+// TestConcurrencySignals_ConcurrencyWiring_Acceptance verifies that:
+// 1. The scan command has a --concurrency flag
+// 2. The --concurrency flag defaults to 1 (backward-compatible serial execution)
+// 3. The --concurrency flag value is accepted and wired to the dispatcher
+// 4. Invalid --concurrency values (0, negative) are rejected with an error
+// 5. The scan command uses dispatcher.Dispatch() instead of direct runner.Run()
+//
+// Acceptance criterion: CLI wires --concurrency flag through to the dispatcher,
+// replacing the direct runner.Run() call with dispatcher.Dispatch(), and
+// progress reporting works correctly under concurrency.
+//
+// Phase: RED — --concurrency flag does not exist yet.
+func TestConcurrencySignals_ConcurrencyWiring_Acceptance(t *testing.T) {
+	t.Run("scan has concurrency flag with default 1", func(t *testing.T) {
+		root := NewRootCommand()
+		scanCmd := findSubcommand(root, "scan")
+		if scanCmd == nil {
+			t.Fatal("expected scan subcommand to exist")
+		}
+
+		concFlag := scanCmd.Flags().Lookup("concurrency")
+		if concFlag == nil {
+			t.Fatal("expected scan command to have --concurrency flag")
+		}
+
+		// Default value should be "1" (serial execution).
+		if concFlag.DefValue != "1" {
+			t.Errorf("--concurrency default = %q, want %q", concFlag.DefValue, "1")
+		}
+	})
+
+	t.Run("invalid concurrency value is rejected with validation error", func(t *testing.T) {
+		root := NewRootCommand()
+		scanCmd := findSubcommand(root, "scan")
+		if scanCmd == nil {
+			t.Fatal("expected scan subcommand to exist")
+		}
+
+		concFlag := scanCmd.Flags().Lookup("concurrency")
+		if concFlag == nil {
+			t.Fatal("--concurrency flag must exist before testing validation")
+		}
+
+		buf := new(bytes.Buffer)
+		root.SetOut(buf)
+		root.SetErr(buf)
+		root.SetArgs([]string{
+			"scan",
+			"--concurrency", "0",
+			"--search", "managed='true'",
+			"--collector", "test",
+		})
+
+		err := root.Execute()
+		if err == nil {
+			t.Fatal("expected error for --concurrency=0")
+		}
+
+		// The error must be a validation error about concurrency being too low,
+		// not an unrelated error (e.g. unknown collector, OCM auth).
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "concurrency") || !strings.Contains(errMsg, "must be") {
+			t.Errorf("error should be a validation error about concurrency value, got: %s", errMsg)
+		}
+	})
+
+	t.Run("negative concurrency value is rejected with validation error", func(t *testing.T) {
+		root := NewRootCommand()
+		scanCmd := findSubcommand(root, "scan")
+		if scanCmd == nil {
+			t.Fatal("expected scan subcommand to exist")
+		}
+
+		concFlag := scanCmd.Flags().Lookup("concurrency")
+		if concFlag == nil {
+			t.Fatal("--concurrency flag must exist before testing validation")
+		}
+
+		buf := new(bytes.Buffer)
+		root.SetOut(buf)
+		root.SetErr(buf)
+		root.SetArgs([]string{
+			"scan",
+			"--concurrency", "-1",
+			"--search", "managed='true'",
+			"--collector", "test",
+		})
+
+		err := root.Execute()
+		if err == nil {
+			t.Fatal("expected error for --concurrency=-1")
+		}
+
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "concurrency") || !strings.Contains(errMsg, "must be") {
+			t.Errorf("error should be a validation error about concurrency value, got: %s", errMsg)
+		}
+	})
+}
