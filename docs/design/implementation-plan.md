@@ -131,12 +131,19 @@ Add dispatcher with semaphore-based concurrency and graceful SIGINT shutdown.
 
 ### Phase 7: Polish
 
-Progress reporting, summary output, README.
+Progress reporting, summary output, accurate finalize counts, README.
+
+**Files:** `internal/runner/dispatcher.go`, `internal/cli/cli.go`, `README.md`
 
 **Key details:**
-- Progress callback from dispatcher: `[142/1500] cluster-name (ok|error)`
-- End-of-run summary: total, succeeded, failed, duration, output path
-- `--verbose`: per-collector results; `--debug`: raw collector output
+- **Progress lines — before + after:** Keep existing "before" line (`[N/Total] cluster-name (cluster-id)`) for liveness. Add "after" line with outcome: `[N/Total] cluster-name (ok|error|skipped, 2.3s)`. Counter `N` is dispatch index (stable on both lines), not completion order.
+- **Outcome ternary:** `ok` = all collectors succeeded. `error` = at least one collector errored. `skipped` = backplane login failed (all collectors marked skipped).
+- **Dispatcher owns counts:** Atomic counters on `Dispatcher` — `Succeeded()`, `Failed()`, `Skipped()`. Replaces stubbed counts in `cli.go:205-207`.
+- **End-of-run summary:** Compact single-line to stderr, printed in `cli.go` before `Finalize`. Format: `Done: 1500 clusters (1480 ok, 15 error, 5 skipped) in 12m34s → output/2026-06-25T143022/`. Use `Interrupted:` prefix when cancelled.
+- **`--verbose`/`--debug`:** Deferred — flags stay wired to `slog` levels only. No additional progress output behavior.
+- **README.md:** Minimal — one-liner description, prerequisites (Go, `ocm` CLI, OCM token), build (`make build`), usage example, output format (run directory contents), available collectors with params.
+
+**Verify:** `--concurrency=5` with mixed success/failure clusters shows correct before/after lines, accurate summary counts, and correct `meta.json`.
 
 ## Dependencies
 
