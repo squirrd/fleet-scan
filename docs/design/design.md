@@ -135,4 +135,3 @@ fleet-scan scan --search="product.id = 'rosa'" --collector=managed-namespaces --
 
 ## Future Enhancements (noted, not built)
 - `--metadata-fields` flag to customize cluster metadata extraction
-- `--concurrency=N` for parallel cluster processing
