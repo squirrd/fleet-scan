@@ -226,3 +226,90 @@ func TestConcurrencySignals_ConcurrencyWiring_Acceptance(t *testing.T) {
 		}
 	})
 }
+
+// TestMc105ProgressSummary_Readme_Acceptance verifies that:
+// 1. A README.md file exists at the repository root
+// 2. README contains a one-liner project description
+// 3. README documents prerequisites (Go, OCM CLI, backplane, OCM_TOKEN)
+// 4. README documents build instructions (make build / go build)
+// 5. README documents usage with --search, --collector, --concurrency flags
+// 6. README documents output format (JSONL + meta.json)
+// 7. README documents available collectors with params
+//
+// Acceptance criterion: Write README.md with one-liner description, prerequisites,
+// build, usage example with --search/--collector/--concurrency, output format,
+// available collectors with params.
+//
+// Phase: RED — README.md does not exist yet.
+func TestMc105ProgressSummary_Readme_Acceptance(t *testing.T) {
+	// Find the repo root by walking up from the test file location.
+	// The test package is at internal/cli/, so the repo root is two levels up.
+	// We use go module root detection via go.mod.
+	repoRoot := findRepoRoot(t)
+
+	readmePath := filepath.Join(repoRoot, "README.md")
+	content, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("README.md does not exist at repo root: %v", err)
+	}
+
+	readme := string(content)
+
+	// Must contain a project description.
+	if !strings.Contains(strings.ToLower(readme), "fleet-scan") {
+		t.Error("README should mention 'fleet-scan'")
+	}
+
+	// Must document prerequisites.
+	if !strings.Contains(readme, "OCM_TOKEN") {
+		t.Error("README should document OCM_TOKEN prerequisite")
+	}
+
+	// Must document build instructions.
+	if !strings.Contains(readme, "make build") && !strings.Contains(readme, "go build") {
+		t.Error("README should document build instructions (make build or go build)")
+	}
+
+	// Must document usage with key flags.
+	if !strings.Contains(readme, "--search") {
+		t.Error("README should document --search flag usage")
+	}
+	if !strings.Contains(readme, "--collector") {
+		t.Error("README should document --collector flag usage")
+	}
+	if !strings.Contains(readme, "--concurrency") {
+		t.Error("README should document --concurrency flag usage")
+	}
+
+	// Must document output format.
+	if !strings.Contains(strings.ToLower(readme), "jsonl") {
+		t.Error("README should document JSONL output format")
+	}
+	if !strings.Contains(strings.ToLower(readme), "meta.json") {
+		t.Error("README should document meta.json output")
+	}
+
+	// Must document available collectors.
+	if !strings.Contains(readme, "managed-namespaces") {
+		t.Error("README should document the managed-namespaces collector")
+	}
+}
+
+// findRepoRoot walks up from the current working directory to find the go.mod file.
+func findRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("cannot get working directory: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("cannot find repo root (no go.mod found)")
+		}
+		dir = parent
+	}
+}

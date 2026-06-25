@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -949,4 +950,439 @@ func TestDispatcherCounters_MultipleCollectors_AnyErrorMeansFailed(t *testing.T)
 	if got := d.Skipped(); got != 0 {
 		t.Errorf("Skipped() = %d, want 0", got)
 	}
+}
+
+// TestMc105ProgressSummary_DispatcherCounters_Acceptance verifies that:
+// 1. Dispatcher exposes Succeeded(), Failed(), Skipped() int accessors
+// 2. After dispatching clusters with mixed outcomes (ok, error, skipped),
+//    the counters reflect the correct totals
+// 3. Outcome ternary per cluster:
+//    - ok: all collectors succeeded
+//    - error: at least one collector errored
+//    - skipped: backplane login failed
+// 4. Counters are safe for concurrent access (atomic)
+//
+// Acceptance criterion: Dispatcher tracks succeeded/failed/skipped outcomes
+// via atomic counters with Succeeded(), Failed(), Skipped() accessors;
+// outcome ternary (ok=all collectors succeeded, error=at least one errored,
+// skipped=backplane login failed) determined per-cluster inside processCluster.
+//
+// Phase: RED — Succeeded(), Failed(), Skipped() methods do not exist yet.
+func TestMc105ProgressSummary_DispatcherCounters_Acceptance(t *testing.T) {
+	t.Run("tracks succeeded/failed/skipped outcomes correctly", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "ok1", Name: "cluster-ok1"},       // all collectors succeed → ok
+			{ID: "ok2", Name: "cluster-ok2"},       // all collectors succeed → ok
+			{ID: "err1", Name: "cluster-err1"},     // one collector errors → error
+			{ID: "skip1", Name: "cluster-skip1"},   // backplane login fails → skipped
+		}
+
+		w := &concurrentMockWriter{}
+		stderr := new(bytes.Buffer)
+
+		successCol := &mockCollector{
+			name: "good-col",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				if clusterID == "err1" {
+					return nil, fmt.Errorf("collector error: connection refused")
+				}
+				return json.RawMessage(`{"status":"ok"}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         stderr,
+			Collectors:     []collector.Collector{successCol},
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
+				if clusterID == "skip1" {
+					return "", nil, fmt.Errorf("backplane: no route to host")
+				}
+				return "/tmp/kube-" + clusterID, func() {}, nil
+			},
+		}
+
+		d := NewDispatcher(2, opts)
+		err := d.Dispatch(context.Background(), clusters, w)
+		if err != nil {
+			t.Fatalf("Dispatch returned error: %v", err)
+		}
+
+		// Verify counter accessors exist and return correct values.
+		if got := d.Succeeded(); got != 2 {
+			t.Errorf("Succeeded() = %d, want 2 (ok1, ok2)", got)
+		}
+		if got := d.Failed(); got != 1 {
+			t.Errorf("Failed() = %d, want 1 (err1)", got)
+		}
+		if got := d.Skipped(); got != 1 {
+			t.Errorf("Skipped() = %d, want 1 (skip1)", got)
+		}
+	})
+
+	t.Run("all-success scenario counts correctly", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+			{ID: "c2", Name: "cluster-2"},
+			{ID: "c3", Name: "cluster-3"},
+		}
+
+		w := &concurrentMockWriter{}
+
+		col := &mockCollector{
+			name: "ok-col",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			Collectors:     []collector.Collector{col},
+		}
+
+		d := NewDispatcher(3, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		if got := d.Succeeded(); got != 3 {
+			t.Errorf("Succeeded() = %d, want 3", got)
+		}
+		if got := d.Failed(); got != 0 {
+			t.Errorf("Failed() = %d, want 0", got)
+		}
+		if got := d.Skipped(); got != 0 {
+			t.Errorf("Skipped() = %d, want 0", got)
+		}
+	})
+
+	t.Run("counters are safe under high concurrency", func(t *testing.T) {
+		clusters := make([]ocm.ClusterMetadata, 50)
+		for i := range clusters {
+			clusters[i] = ocm.ClusterMetadata{
+				ID:   fmt.Sprintf("c%d", i),
+				Name: fmt.Sprintf("cluster-%d", i),
+			}
+		}
+
+		w := &concurrentMockWriter{}
+
+		col := &mockCollector{
+			name: "fast",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			Collectors:     []collector.Collector{col},
+		}
+
+		d := NewDispatcher(10, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		total := d.Succeeded() + d.Failed() + d.Skipped()
+		if total != 50 {
+			t.Errorf("total outcomes = %d, want 50 (succeeded=%d, failed=%d, skipped=%d)",
+				total, d.Succeeded(), d.Failed(), d.Skipped())
+		}
+	})
+}
+
+// TestMc105ProgressSummary_AfterLineProgress_Acceptance verifies that:
+// 1. After each cluster completes, dispatcher prints an after-line to stderr
+// 2. After-line format: [N/Total] cluster-name (outcome, duration)
+//    where outcome is one of ok, error, skipped
+// 3. N is the dispatch index (1-based), matching the before-line
+// 4. Duration is formatted as human-readable (e.g. "2.3s")
+// 5. After-lines appear for every processed cluster
+//
+// Acceptance criterion: After each cluster completes, dispatcher prints an
+// after-line to stderr — [N/Total] cluster-name (ok|error|skipped, 2.3s) —
+// where N is dispatch index (stable on both before and after lines).
+//
+// Phase: RED — dispatcher only prints before-lines, no after-lines with outcome/timing.
+func TestMc105ProgressSummary_AfterLineProgress_Acceptance(t *testing.T) {
+	t.Run("prints after-line with outcome and timing for each cluster", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-alpha"},
+			{ID: "c2", Name: "cluster-beta"},
+		}
+
+		w := &concurrentMockWriter{}
+		stderr := new(bytes.Buffer)
+
+		col := &mockCollector{
+			name: "test-col",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				time.Sleep(10 * time.Millisecond) // ensure measurable duration
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         stderr,
+			Collectors:     []collector.Collector{col},
+		}
+
+		d := NewDispatcher(1, opts) // serial to get deterministic order
+		err := d.Dispatch(context.Background(), clusters, w)
+		if err != nil {
+			t.Fatalf("Dispatch returned error: %v", err)
+		}
+
+		output := stderr.String()
+
+		// After-lines must contain outcome and timing.
+		// Look for pattern: [1/2] cluster-alpha (ok, <duration>)
+		if !strings.Contains(output, "cluster-alpha") || !strings.Contains(output, "(ok,") {
+			t.Errorf("expected after-line with '(ok,' for cluster-alpha in stderr, got:\n%s", output)
+		}
+		if !strings.Contains(output, "cluster-beta") || !strings.Contains(output, "(ok,") {
+			t.Errorf("expected after-line with '(ok,' for cluster-beta in stderr, got:\n%s", output)
+		}
+
+		// After-lines must contain a duration (at least a number followed by time unit).
+		// We check for a pattern like "0.0" or "1." followed by something.
+		if !strings.Contains(output, "s)") {
+			t.Errorf("expected after-line to include duration ending with 's)', got:\n%s", output)
+		}
+	})
+
+	t.Run("after-line shows error outcome for collector failures", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "fail-cluster"},
+		}
+
+		w := &concurrentMockWriter{}
+		stderr := new(bytes.Buffer)
+
+		failCol := &mockCollector{
+			name: "fail-col",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return nil, fmt.Errorf("connection refused")
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         stderr,
+			Collectors:     []collector.Collector{failCol},
+		}
+
+		d := NewDispatcher(1, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		output := stderr.String()
+
+		// After-line must show "error" outcome.
+		if !strings.Contains(output, "(error,") {
+			t.Errorf("expected after-line with '(error,' for failed cluster, got:\n%s", output)
+		}
+	})
+
+	t.Run("after-line shows skipped outcome for backplane failures", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "skip-cluster"},
+		}
+
+		w := &concurrentMockWriter{}
+		stderr := new(bytes.Buffer)
+
+		col := &mockCollector{
+			name: "test-col",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         stderr,
+			Collectors:     []collector.Collector{col},
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
+				return "", nil, fmt.Errorf("backplane: no route")
+			},
+		}
+
+		d := NewDispatcher(1, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		output := stderr.String()
+
+		// After-line must show "skipped" outcome.
+		if !strings.Contains(output, "(skipped,") {
+			t.Errorf("expected after-line with '(skipped,' for backplane-failed cluster, got:\n%s", output)
+		}
+	})
+}
+
+// TestMc105ProgressSummary_FinalizeSummary_Acceptance verifies that:
+// 1. Dispatcher counters feed accurate counts into Finalize (replacing stubs)
+// 2. meta.json has correct clusters_success, clusters_failed, clusters_skipped
+// 3. A compact summary line is printed to stderr:
+//    "Done: N clusters (X ok, Y error, Z skipped) in <duration> -> <output-dir>/"
+// 4. When dispatch was interrupted, prefix is "Interrupted:" instead of "Done:"
+//
+// Acceptance criterion: Wire d.Succeeded()/Failed()/Skipped() into Finalize()
+// replacing stubbed counts; print compact summary line to stderr before Finalize.
+//
+// Phase: RED — CLI currently uses stubbed counts (succeeded=len(clusters), failed=0, skipped=0).
+func TestMc105ProgressSummary_FinalizeSummary_Acceptance(t *testing.T) {
+	t.Run("dispatcher counters produce accurate meta.json counts", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		meta := output.RunMeta{
+			Status:     "running",
+			Search:     "test",
+			Collectors: []string{"test-col"},
+		}
+		w, err := output.NewWriter(tmpDir, meta)
+		if err != nil {
+			t.Fatalf("NewWriter: %v", err)
+		}
+
+		clusters := []ocm.ClusterMetadata{
+			{ID: "ok1", Name: "cluster-ok1"},
+			{ID: "ok2", Name: "cluster-ok2"},
+			{ID: "err1", Name: "cluster-err1"},
+			{ID: "skip1", Name: "cluster-skip1"},
+		}
+
+		col := &mockCollector{
+			name: "test-col",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				if clusterID == "err1" {
+					return nil, fmt.Errorf("collector error")
+				}
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			Collectors:     []collector.Collector{col},
+			BackplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
+				if clusterID == "skip1" {
+					return "", nil, fmt.Errorf("backplane: no route")
+				}
+				return "/tmp/kube-" + clusterID, func() {}, nil
+			},
+		}
+
+		d := NewDispatcher(2, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		// Finalize using dispatcher counters (not stubs).
+		if err := w.Finalize("completed", d.Succeeded(), d.Failed(), d.Skipped(), time.Second); err != nil {
+			t.Fatalf("Finalize: %v", err)
+		}
+
+		// Read back meta.json and verify counts are accurate.
+		metaPath := filepath.Join(w.RunDir(), "meta.json")
+		metaBytes, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("reading meta.json: %v", err)
+		}
+
+		var finalMeta output.RunMeta
+		if err := json.Unmarshal(metaBytes, &finalMeta); err != nil {
+			t.Fatalf("parsing meta.json: %v", err)
+		}
+
+		if finalMeta.ClustersSuccess != 2 {
+			t.Errorf("clusters_success = %d, want 2", finalMeta.ClustersSuccess)
+		}
+		if finalMeta.ClustersFailed != 1 {
+			t.Errorf("clusters_failed = %d, want 1", finalMeta.ClustersFailed)
+		}
+		if finalMeta.ClustersSkipped != 1 {
+			t.Errorf("clusters_skipped = %d, want 1", finalMeta.ClustersSkipped)
+		}
+	})
+
+	t.Run("summary line printed to stderr with correct format", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+			{ID: "c2", Name: "cluster-2"},
+			{ID: "c3", Name: "cluster-3"},
+		}
+
+		w := &concurrentMockWriter{}
+		stderr := new(bytes.Buffer)
+
+		col := &mockCollector{
+			name: "test",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         stderr,
+			Collectors:     []collector.Collector{col},
+		}
+
+		d := NewDispatcher(1, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		// Call the summary function that should exist on the dispatcher.
+		// SummaryLine(total int, dur time.Duration, outputDir string) produces
+		// "Done: 3 clusters (3 ok, 0 error, 0 skipped) in <dur> -> <dir>/"
+		summaryLine := d.SummaryLine(3, time.Second, "/tmp/output/run1")
+
+		if !strings.Contains(summaryLine, "Done:") {
+			t.Errorf("summary line should start with 'Done:', got: %s", summaryLine)
+		}
+		if !strings.Contains(summaryLine, "3 clusters") {
+			t.Errorf("summary line should contain '3 clusters', got: %s", summaryLine)
+		}
+		if !strings.Contains(summaryLine, "3 ok") {
+			t.Errorf("summary line should contain '3 ok', got: %s", summaryLine)
+		}
+		if !strings.Contains(summaryLine, "0 error") {
+			t.Errorf("summary line should contain '0 error', got: %s", summaryLine)
+		}
+		if !strings.Contains(summaryLine, "/tmp/output/run1") {
+			t.Errorf("summary line should contain output dir, got: %s", summaryLine)
+		}
+	})
+
+	t.Run("summary line uses Interrupted prefix when cancelled", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+		}
+
+		w := &concurrentMockWriter{}
+
+		col := &mockCollector{
+			name: "test",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			Collectors:     []collector.Collector{col},
+		}
+
+		d := NewDispatcher(1, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		// InterruptedSummaryLine should use "Interrupted:" prefix.
+		summaryLine := d.InterruptedSummaryLine(5, time.Minute, "/tmp/output/run2")
+
+		if !strings.Contains(summaryLine, "Interrupted:") {
+			t.Errorf("interrupted summary should start with 'Interrupted:', got: %s", summaryLine)
+		}
+		if !strings.Contains(summaryLine, "5 clusters") {
+			t.Errorf("interrupted summary should contain '5 clusters', got: %s", summaryLine)
+		}
+	})
 }
