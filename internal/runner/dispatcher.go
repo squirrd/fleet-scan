@@ -92,14 +92,11 @@ done:
 // processCluster handles a single cluster: applies per-cluster timeout,
 // runs backplane login if configured, runs collectors, and writes the record.
 func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster ocm.ClusterMetadata, w RecordWriter) {
+	start := time.Now()
+
 	// Per-cluster timeout.
 	clusterCtx, cancel := context.WithTimeout(ctx, d.opts.ClusterTimeout)
 	defer cancel()
-
-	// Print progress.
-	if d.opts.Stderr != nil {
-		fmt.Fprintf(d.opts.Stderr, "[%d/%d] %s (%s)\n", idx+1, total, cluster.Name, cluster.ID)
-	}
 
 	rec := output.ClusterRecord{
 		ClusterMetadata: cluster,
@@ -146,18 +143,29 @@ func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster
 		}
 	}
 
-	// Track outcome: skipped > failed > succeeded.
+	// Determine outcome string for progress reporting.
+	var outcome string
 	switch {
 	case loginFailed:
+		outcome = "skipped"
 		d.skipped.Add(1)
 	case hasError:
+		outcome = "error"
 		d.failed.Add(1)
 	default:
+		outcome = "ok"
 		d.succeeded.Add(1)
 	}
 
 	// Write record (RecordWriter implementations must be concurrent-safe).
 	_ = w.WriteRecord(rec)
+
+	// Print after-line with outcome and timing.
+	elapsed := time.Since(start)
+	if d.opts.Stderr != nil {
+		fmt.Fprintf(d.opts.Stderr, "[%d/%d] %s (%s, %s)\n",
+			idx+1, total, cluster.Name, outcome, formatDuration(elapsed))
+	}
 
 	// Clean up kubeconfig.
 	if clusterCleanup != nil {
