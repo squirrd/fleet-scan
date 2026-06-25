@@ -4,16 +4,23 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/squirrd/fleet-scan/internal/ocm"
 	"github.com/squirrd/fleet-scan/internal/output"
 )
 
 // Dispatcher dispatches cluster processing to concurrent workers using a
-// semaphore (buffered channel) to limit parallelism.
+// semaphore (buffered channel) to limit parallelism. It tracks per-cluster
+// outcomes via atomic counters: succeeded (all collectors ok), failed (at
+// least one collector errored), skipped (backplane login failed).
 type Dispatcher struct {
 	concurrency int
 	opts        RunOptions
+
+	succeeded atomic.Int64
+	failed    atomic.Int64
+	skipped   atomic.Int64
 }
 
 // NewDispatcher creates a Dispatcher that processes clusters with the given
@@ -24,6 +31,15 @@ func NewDispatcher(concurrency int, opts RunOptions) *Dispatcher {
 		opts:        opts,
 	}
 }
+
+// Succeeded returns the number of clusters where all collectors succeeded.
+func (d *Dispatcher) Succeeded() int { return int(d.succeeded.Load()) }
+
+// Failed returns the number of clusters where at least one collector errored.
+func (d *Dispatcher) Failed() int { return int(d.failed.Load()) }
+
+// Skipped returns the number of clusters where backplane login failed.
+func (d *Dispatcher) Skipped() int { return int(d.skipped.Load()) }
 
 // Dispatch processes all clusters concurrently (up to d.concurrency at a time),
 // writing a ClusterRecord for each one via w. It respects context cancellation:
@@ -110,10 +126,12 @@ func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster
 	}
 
 	// Run collectors (unless login failed).
+	hasError := false
 	if !loginFailed {
 		for _, c := range d.opts.Collectors {
 			data, runErr := c.Run(clusterCtx, cluster.ID, kubeconfigPath)
 			if runErr != nil {
+				hasError = true
 				rec.ClusterResult[c.Name()] = output.CollectorResult{
 					Status: "error",
 					Error:  runErr.Error(),
@@ -125,6 +143,16 @@ func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster
 				}
 			}
 		}
+	}
+
+	// Track outcome: skipped > failed > succeeded.
+	switch {
+	case loginFailed:
+		d.skipped.Add(1)
+	case hasError:
+		d.failed.Add(1)
+	default:
+		d.succeeded.Add(1)
 	}
 
 	// Write record (RecordWriter implementations must be concurrent-safe).

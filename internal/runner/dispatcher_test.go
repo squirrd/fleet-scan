@@ -717,3 +717,236 @@ func TestDispatch_ContextCancellation_StopsNewDispatches(t *testing.T) {
 		t.Errorf("expected fewer than 20 records on cancelled context, got %d", processedCount)
 	}
 }
+
+// backwards_compatibility: tests public API contract
+
+// TestDispatcherCounters_MixedOutcomes_TracksCorrectCounts verifies that the
+// Dispatcher tracks succeeded/failed/skipped outcomes via atomic counters
+// with Succeeded(), Failed(), Skipped() accessors. The outcome ternary is:
+//   - ok (succeeded): all collectors succeeded
+//   - error (failed): at least one collector errored
+//   - skipped: backplane login failed
+func TestDispatcherCounters_MixedOutcomes_TracksCorrectCounts(t *testing.T) {
+	tests := []struct {
+		name              string
+		clusters          []ocm.ClusterMetadata
+		backplaneLogin    BackplaneLoginFunc
+		collectorRunFn    func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error)
+		wantSucceeded     int
+		wantFailed        int
+		wantSkipped       int
+	}{
+		{
+			name: "all clusters succeed",
+			clusters: []ocm.ClusterMetadata{
+				{ID: "c1", Name: "cluster-1"},
+				{ID: "c2", Name: "cluster-2"},
+				{ID: "c3", Name: "cluster-3"},
+			},
+			collectorRunFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{"ok":true}`), nil
+			},
+			wantSucceeded: 3,
+			wantFailed:    0,
+			wantSkipped:   0,
+		},
+		{
+			name: "one collector error marks cluster as failed",
+			clusters: []ocm.ClusterMetadata{
+				{ID: "ok1", Name: "cluster-ok1"},
+				{ID: "err1", Name: "cluster-err1"},
+				{ID: "ok2", Name: "cluster-ok2"},
+			},
+			collectorRunFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				if clusterID == "err1" {
+					return nil, fmt.Errorf("connection refused")
+				}
+				return json.RawMessage(`{}`), nil
+			},
+			wantSucceeded: 2,
+			wantFailed:    1,
+			wantSkipped:   0,
+		},
+		{
+			name: "backplane login failure marks cluster as skipped",
+			clusters: []ocm.ClusterMetadata{
+				{ID: "ok1", Name: "cluster-ok1"},
+				{ID: "skip1", Name: "cluster-skip1"},
+			},
+			backplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
+				if clusterID == "skip1" {
+					return "", nil, fmt.Errorf("backplane: no route to host")
+				}
+				return "/tmp/kube-" + clusterID, func() {}, nil
+			},
+			collectorRunFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+			wantSucceeded: 1,
+			wantFailed:    0,
+			wantSkipped:   1,
+		},
+		{
+			name: "mixed outcomes: ok, error, and skipped",
+			clusters: []ocm.ClusterMetadata{
+				{ID: "ok1", Name: "cluster-ok1"},
+				{ID: "ok2", Name: "cluster-ok2"},
+				{ID: "err1", Name: "cluster-err1"},
+				{ID: "skip1", Name: "cluster-skip1"},
+			},
+			backplaneLogin: func(ctx context.Context, clusterID string) (string, func(), error) {
+				if clusterID == "skip1" {
+					return "", nil, fmt.Errorf("backplane: no route to host")
+				}
+				return "/tmp/kube-" + clusterID, func() {}, nil
+			},
+			collectorRunFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				if clusterID == "err1" {
+					return nil, fmt.Errorf("collector error")
+				}
+				return json.RawMessage(`{}`), nil
+			},
+			wantSucceeded: 2,
+			wantFailed:    1,
+			wantSkipped:   1,
+		},
+		{
+			name:     "empty cluster list yields all-zero counters",
+			clusters: []ocm.ClusterMetadata{},
+			collectorRunFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+			wantSucceeded: 0,
+			wantFailed:    0,
+			wantSkipped:   0,
+		},
+		{
+			name: "no backplane configured — all succeed when collectors succeed",
+			clusters: []ocm.ClusterMetadata{
+				{ID: "c1", Name: "cluster-1"},
+				{ID: "c2", Name: "cluster-2"},
+			},
+			// backplaneLogin nil — no login step
+			collectorRunFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+			wantSucceeded: 2,
+			wantFailed:    0,
+			wantSkipped:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &concurrentMockWriter{}
+
+			col := &mockCollector{
+				name:  "test-col",
+				runFn: tt.collectorRunFn,
+			}
+
+			opts := RunOptions{
+				ClusterTimeout: 30 * time.Second,
+				Stderr:         new(bytes.Buffer),
+				Collectors:     []collector.Collector{col},
+				BackplaneLogin: tt.backplaneLogin,
+			}
+
+			d := NewDispatcher(2, opts)
+			_ = d.Dispatch(context.Background(), tt.clusters, w)
+
+			if got := d.Succeeded(); got != tt.wantSucceeded {
+				t.Errorf("Succeeded() = %d, want %d", got, tt.wantSucceeded)
+			}
+			if got := d.Failed(); got != tt.wantFailed {
+				t.Errorf("Failed() = %d, want %d", got, tt.wantFailed)
+			}
+			if got := d.Skipped(); got != tt.wantSkipped {
+				t.Errorf("Skipped() = %d, want %d", got, tt.wantSkipped)
+			}
+		})
+	}
+}
+
+// TestDispatcherCounters_ConcurrencySafety_AtomicAccess verifies that
+// counters are safe under high concurrency (atomic operations, not racy).
+func TestDispatcherCounters_ConcurrencySafety_AtomicAccess(t *testing.T) {
+	clusters := make([]ocm.ClusterMetadata, 50)
+	for i := range clusters {
+		clusters[i] = ocm.ClusterMetadata{
+			ID:   fmt.Sprintf("c%d", i),
+			Name: fmt.Sprintf("cluster-%d", i),
+		}
+	}
+
+	w := &concurrentMockWriter{}
+
+	col := &mockCollector{
+		name: "fast",
+		runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		},
+	}
+
+	opts := RunOptions{
+		ClusterTimeout: 30 * time.Second,
+		Stderr:         new(bytes.Buffer),
+		Collectors:     []collector.Collector{col},
+	}
+
+	d := NewDispatcher(10, opts)
+	_ = d.Dispatch(context.Background(), clusters, w)
+
+	total := d.Succeeded() + d.Failed() + d.Skipped()
+	if total != 50 {
+		t.Errorf("total outcomes = %d, want 50 (succeeded=%d, failed=%d, skipped=%d)",
+			total, d.Succeeded(), d.Failed(), d.Skipped())
+	}
+	// All should be succeeded since no errors or login failures.
+	if d.Succeeded() != 50 {
+		t.Errorf("Succeeded() = %d, want 50", d.Succeeded())
+	}
+}
+
+// TestDispatcherCounters_MultipleCollectors_AnyErrorMeansFailed verifies the
+// outcome ternary: if ANY collector errors, the cluster is counted as failed,
+// even if other collectors succeed.
+func TestDispatcherCounters_MultipleCollectors_AnyErrorMeansFailed(t *testing.T) {
+	clusters := []ocm.ClusterMetadata{
+		{ID: "c1", Name: "cluster-1"},
+	}
+
+	w := &concurrentMockWriter{}
+
+	goodCol := &mockCollector{
+		name: "good",
+		runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		},
+	}
+	badCol := &mockCollector{
+		name: "bad",
+		runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+			return nil, fmt.Errorf("collector failure")
+		},
+	}
+
+	opts := RunOptions{
+		ClusterTimeout: 30 * time.Second,
+		Stderr:         new(bytes.Buffer),
+		Collectors:     []collector.Collector{goodCol, badCol},
+	}
+
+	d := NewDispatcher(1, opts)
+	_ = d.Dispatch(context.Background(), clusters, w)
+
+	if got := d.Succeeded(); got != 0 {
+		t.Errorf("Succeeded() = %d, want 0 (one collector errored)", got)
+	}
+	if got := d.Failed(); got != 1 {
+		t.Errorf("Failed() = %d, want 1 (one collector errored → cluster failed)", got)
+	}
+	if got := d.Skipped(); got != 0 {
+		t.Errorf("Skipped() = %d, want 0", got)
+	}
+}
