@@ -202,11 +202,16 @@ func runScan(cmd *cobra.Command, args []string) error {
 		status = "interrupted"
 	}
 	dur := time.Since(startTime)
-	succeeded := len(clusters) // stub: all succeed for now
-	failed := 0
-	skipped := 0
 
-	if finalErr := w.Finalize(status, succeeded, failed, skipped, dur); finalErr != nil {
+	// Print compact summary line to stderr.
+	stderr := cmd.ErrOrStderr()
+	if runErr != nil {
+		fmt.Fprintln(stderr, d.InterruptedSummaryLine(len(clusters), dur, w.RunDir()))
+	} else {
+		fmt.Fprintln(stderr, d.SummaryLine(len(clusters), dur, w.RunDir()))
+	}
+
+	if finalErr := w.Finalize(status, d.Succeeded(), d.Failed(), d.Skipped(), dur); finalErr != nil {
 		return finalErr
 	}
 
