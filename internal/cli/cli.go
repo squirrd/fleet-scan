@@ -18,13 +18,20 @@ import (
 	"github.com/squirrd/fleet-scan/internal/runner"
 )
 
-func NewRootCommand() *cobra.Command {
+func NewRootCommand(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "fleet-scan",
 		Short: "Batch scanner for OpenShift cluster fleets",
 	}
 
 	root.AddCommand(newScanCommand())
+	root.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Print the version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Fprintf(cmd.OutOrStdout(), "fleet-scan %s\n", version)
+		},
+	})
 	return root
 }
 

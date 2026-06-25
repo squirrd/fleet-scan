@@ -1,6 +1,6 @@
 # Build output
 bin/
-fleet-scan
+/fleet-scan
 
 # Local scratch / investigation
 local/

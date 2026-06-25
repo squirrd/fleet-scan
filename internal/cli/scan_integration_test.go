@@ -12,7 +12,7 @@ import (
 // and verifies that the output contains a cluster count.
 // This is an integration test that requires OCM credentials to be available.
 func TestDryRunPrintsClusterCount(t *testing.T) {
-	root := NewRootCommand()
+	root := NewRootCommand("test")
 
 	buf := new(bytes.Buffer)
 	root.SetOut(buf)

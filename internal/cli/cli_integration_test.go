@@ -18,7 +18,7 @@ import (
 // 4. Resume reads search from meta.json when --resume is used alone
 func TestPhase2Output_CliWiring_Acceptance(t *testing.T) {
 	t.Run("scan has resume flag", func(t *testing.T) {
-		root := NewRootCommand()
+		root := NewRootCommand("test")
 		scanCmd := findSubcommand(root, "scan")
 		if scanCmd == nil {
 			t.Fatal("expected scan subcommand to exist")
@@ -31,7 +31,7 @@ func TestPhase2Output_CliWiring_Acceptance(t *testing.T) {
 	})
 
 	t.Run("resume and search are mutually exclusive", func(t *testing.T) {
-		root := NewRootCommand()
+		root := NewRootCommand("test")
 		buf := new(bytes.Buffer)
 		root.SetOut(buf)
 		root.SetErr(buf)
@@ -54,7 +54,7 @@ func TestPhase2Output_CliWiring_Acceptance(t *testing.T) {
 	})
 
 	t.Run("resume and collector are mutually exclusive", func(t *testing.T) {
-		root := NewRootCommand()
+		root := NewRootCommand("test")
 		buf := new(bytes.Buffer)
 		root.SetOut(buf)
 		root.SetErr(buf)
@@ -103,7 +103,7 @@ func TestPhase2Output_CliWiring_Acceptance(t *testing.T) {
 		// We can't fully test the OCM call here (no token), but we can verify
 		// the flag is accepted and meta.json is parsed by checking that the error
 		// is NOT about missing search/collector but rather about OCM auth.
-		root := NewRootCommand()
+		root := NewRootCommand("test")
 		buf := new(bytes.Buffer)
 		root.SetOut(buf)
 		root.SetErr(buf)
@@ -141,7 +141,7 @@ func TestPhase2Output_CliWiring_Acceptance(t *testing.T) {
 // Phase: RED — --concurrency flag does not exist yet.
 func TestConcurrencySignals_ConcurrencyWiring_Acceptance(t *testing.T) {
 	t.Run("scan has concurrency flag with default 1", func(t *testing.T) {
-		root := NewRootCommand()
+		root := NewRootCommand("test")
 		scanCmd := findSubcommand(root, "scan")
 		if scanCmd == nil {
 			t.Fatal("expected scan subcommand to exist")
@@ -159,7 +159,7 @@ func TestConcurrencySignals_ConcurrencyWiring_Acceptance(t *testing.T) {
 	})
 
 	t.Run("invalid concurrency value is rejected with validation error", func(t *testing.T) {
-		root := NewRootCommand()
+		root := NewRootCommand("test")
 		scanCmd := findSubcommand(root, "scan")
 		if scanCmd == nil {
 			t.Fatal("expected scan subcommand to exist")
@@ -194,7 +194,7 @@ func TestConcurrencySignals_ConcurrencyWiring_Acceptance(t *testing.T) {
 	})
 
 	t.Run("negative concurrency value is rejected with validation error", func(t *testing.T) {
-		root := NewRootCommand()
+		root := NewRootCommand("test")
 		scanCmd := findSubcommand(root, "scan")
 		if scanCmd == nil {
 			t.Fatal("expected scan subcommand to exist")

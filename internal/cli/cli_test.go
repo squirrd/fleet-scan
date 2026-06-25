@@ -11,7 +11,7 @@ import (
 // TestScanCommandHelp verifies that the root command has a "scan" subcommand
 // and that scan --help output contains all expected flags.
 func TestScanCommandHelp(t *testing.T) {
-	root := NewRootCommand()
+	root := NewRootCommand("test")
 
 	// The root command must have a "scan" subcommand.
 	var scanCmd = findSubcommand(root, "scan")
