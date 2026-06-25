@@ -41,6 +41,7 @@ func newScanCommand() *cobra.Command {
 	cmd.Flags().Int("cluster-timeout", 120, "Per-cluster timeout in seconds")
 	cmd.Flags().String("output-dir", "./output/", "Output directory for results")
 	cmd.Flags().String("resume", "", "Resume a previous run from the given run directory path")
+	cmd.Flags().Int("concurrency", 1, "Number of clusters to process concurrently")
 	cmd.Flags().Bool("verbose", false, "Enable verbose logging")
 	cmd.Flags().Bool("debug", false, "Enable debug logging")
 
@@ -56,6 +57,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 	resumePath, _ := cmd.Flags().GetString("resume")
 	outputDir, _ := cmd.Flags().GetString("output-dir")
 	clusterTimeoutSec, _ := cmd.Flags().GetInt("cluster-timeout")
+	concurrency, _ := cmd.Flags().GetInt("concurrency")
+
+	if concurrency < 1 {
+		return fmt.Errorf("--concurrency must be at least 1, got %d", concurrency)
+	}
 
 	level := slog.LevelWarn
 	if verbose {
@@ -187,12 +193,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 		BackplaneLogin: backplane.MakeBackplaneLoginFunc(kubeconfigDir),
 	}
 
-	runErr := runner.Run(ctx, clusters, w, opts)
+	d := runner.NewDispatcher(concurrency, opts)
+	runErr := d.Dispatch(ctx, clusters, w)
 
 	// Finalize.
 	status := "completed"
 	if runErr != nil {
-		status = "failed"
+		status = "interrupted"
 	}
 	dur := time.Since(startTime)
 	succeeded := len(clusters) // stub: all succeed for now

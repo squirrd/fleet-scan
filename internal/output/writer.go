@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
 // Writer writes JSONL records and meta.json to a timestamped run directory.
+// WriteRecord is guarded by a mutex for concurrent write safety.
 type Writer struct {
+	mu     sync.Mutex
 	runDir string
 	meta   RunMeta
 	file   *os.File
@@ -62,7 +65,11 @@ func (w *Writer) RunDir() string {
 
 // WriteRecord marshals a ClusterRecord to JSON and writes it as a single line
 // to results.jsonl. Uses direct os.File.Write for flush-per-line semantics.
+// Safe for concurrent use — guarded by a mutex.
 func (w *Writer) WriteRecord(rec ClusterRecord) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("marshalling record: %w", err)
