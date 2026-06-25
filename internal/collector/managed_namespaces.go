@@ -41,9 +41,7 @@ type nsResult struct {
 	Namespaces []nsEntry `json:"namespaces"`
 }
 
-// clientBuilderFunc is the signature for a function that builds a client
-// from a kubeconfig path and returns a lister that can enumerate resources.
-// The returned function takes (namespace, kind) and returns item names.
+// clientBuilderFunc builds a namespaceLister from a kubeconfig path.
 type clientBuilderFunc func(kubeconfigPath string) (namespaceLister, error)
 
 // namespaceLister provides the operations needed by the collector.
@@ -147,7 +145,6 @@ func (c *managedNamespacesCollector) Run(ctx context.Context, clusterID, kubecon
 
 	return json.Marshal(result)
 }
-
 
 func init() {
 	Register("managed-namespaces", newManagedNamespacesCollector)
