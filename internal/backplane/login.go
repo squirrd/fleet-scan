@@ -33,15 +33,20 @@ func Login(ctx context.Context, clusterID, kubeconfigDir string) (string, func()
 		return "", nil, fmt.Errorf("cluster ID must not be empty")
 	}
 
-	kubeconfigPath := filepath.Join(kubeconfigDir, fmt.Sprintf("kubeconfig-%s", clusterID))
+	if err := os.MkdirAll(kubeconfigDir, 0o700); err != nil {
+		return "", nil, fmt.Errorf("creating kubeconfig directory: %w", err)
+	}
 
-	err := commandRunner(ctx, "ocm", []string{"backplane", "login", clusterID, "--kube-path", kubeconfigPath})
+	// Backplane --kube-path is a directory; it writes <kube-path>/<clusterID>/config.
+	kubeconfigPath := filepath.Join(kubeconfigDir, clusterID, "config")
+
+	err := commandRunner(ctx, "ocm", []string{"backplane", "login", clusterID, "--multi", "--kube-path", kubeconfigDir})
 	if err != nil {
 		return "", nil, fmt.Errorf("backplane login for cluster %s: %w", clusterID, err)
 	}
 
 	cleanup := func() {
-		os.Remove(kubeconfigPath) //nolint:errcheck
+		os.RemoveAll(filepath.Join(kubeconfigDir, clusterID)) //nolint:errcheck
 	}
 
 	return kubeconfigPath, cleanup, nil

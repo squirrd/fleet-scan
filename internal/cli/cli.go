@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/squirrd/fleet-scan/internal/backplane"
+	"github.com/squirrd/fleet-scan/internal/collector"
 	"github.com/squirrd/fleet-scan/internal/ocm"
 	"github.com/squirrd/fleet-scan/internal/output"
 	"github.com/squirrd/fleet-scan/internal/runner"
@@ -121,6 +122,19 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Instantiate and configure collectors.
+	var collectors []collector.Collector
+	for _, spec := range specs {
+		c, err := collector.Get(spec.Name)
+		if err != nil {
+			return err
+		}
+		if err := c.Configure(spec.Params); err != nil {
+			return err
+		}
+		collectors = append(collectors, c)
+	}
+
 	token, err := ocm.ResolveToken()
 	if err != nil {
 		return err
@@ -186,18 +200,15 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create kubeconfigs directory for isolated backplane logins.
 	runDir := w.RunDir()
 	kubeconfigDir := filepath.Join(runDir, "kubeconfigs")
-	if err := os.MkdirAll(kubeconfigDir, 0o700); err != nil {
-		return fmt.Errorf("creating kubeconfigs directory: %w", err)
-	}
 
 	startTime := time.Now()
 	opts := runner.RunOptions{
 		ClusterTimeout: time.Duration(clusterTimeoutSec) * time.Second,
 		Stderr:         cmd.ErrOrStderr(),
 		BackplaneLogin: backplane.MakeBackplaneLoginFunc(kubeconfigDir),
+		Collectors:     collectors,
 	}
 
 	d := runner.NewDispatcher(concurrency, opts)

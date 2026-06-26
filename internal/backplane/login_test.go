@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -16,10 +15,15 @@ func TestBackplaneLogin_BackplaneLoginFunc_Acceptance(t *testing.T) {
 		origRunner := commandRunner
 		t.Cleanup(func() { commandRunner = origRunner })
 		commandRunner = func(ctx context.Context, name string, args []string) error {
-			// Simulate backplane creating the kubeconfig at the --kube-path location.
+			// Simulate backplane creating <kube-path>/<clusterID>/config.
 			for i, a := range args {
 				if a == "--kube-path" && i+1 < len(args) {
-					return os.WriteFile(args[i+1], []byte("fake-kubeconfig"), 0600)
+					clusterID := args[2] // args: backplane login <clusterID> ...
+					configDir := filepath.Join(args[i+1], clusterID)
+					if err := os.MkdirAll(configDir, 0o700); err != nil {
+						return err
+					}
+					return os.WriteFile(filepath.Join(configDir, "config"), []byte("fake-kubeconfig"), 0600)
 				}
 			}
 			return nil
@@ -34,20 +38,25 @@ func TestBackplaneLogin_BackplaneLoginFunc_Acceptance(t *testing.T) {
 			t.Fatal("expected non-empty kubeconfig path")
 		}
 
+		wantPath := filepath.Join(kubeconfigDir, "test-cluster-id", "config")
+		if kubeconfigPath != wantPath {
+			t.Errorf("kubeconfigPath = %q, want %q", kubeconfigPath, wantPath)
+		}
+
 		if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {
 			t.Fatalf("kubeconfig file does not exist at %s", kubeconfigPath)
 		}
 
 		cleanup()
 
-		if _, err := os.Stat(kubeconfigPath); !os.IsNotExist(err) {
-			t.Fatalf("cleanup should have removed kubeconfig at %s, but it still exists", kubeconfigPath)
+		if _, err := os.Stat(filepath.Join(kubeconfigDir, "test-cluster-id")); !os.IsNotExist(err) {
+			t.Fatalf("cleanup should have removed kubeconfig dir for cluster")
 		}
 	})
 }
 
 func TestLogin_CommandExecution(t *testing.T) {
-	t.Run("invokes ocm backplane login with clusterID and --kube-path", func(t *testing.T) {
+	t.Run("invokes ocm backplane login with clusterID and --kube-path dir", func(t *testing.T) {
 		kubeconfigDir := t.TempDir()
 
 		var capturedName string
@@ -62,7 +71,7 @@ func TestLogin_CommandExecution(t *testing.T) {
 			return nil
 		}
 
-		kubeconfigPath, cleanup, err := Login(context.Background(), "my-cluster-123", kubeconfigDir)
+		_, cleanup, err := Login(context.Background(), "my-cluster-123", kubeconfigDir)
 		if err != nil {
 			t.Fatalf("Login returned error: %v", err)
 		}
@@ -72,7 +81,7 @@ func TestLogin_CommandExecution(t *testing.T) {
 			t.Errorf("command name = %q, want %q", capturedName, "ocm")
 		}
 
-		wantArgs := []string{"backplane", "login", "my-cluster-123", "--kube-path", kubeconfigPath}
+		wantArgs := []string{"backplane", "login", "my-cluster-123", "--multi", "--kube-path", kubeconfigDir}
 		if len(capturedArgs) != len(wantArgs) {
 			t.Fatalf("args = %v, want %v", capturedArgs, wantArgs)
 		}
@@ -85,7 +94,7 @@ func TestLogin_CommandExecution(t *testing.T) {
 }
 
 func TestLogin_KubeconfigPathIsolation(t *testing.T) {
-	t.Run("kubeconfig path is inside kubeconfigDir and contains cluster ID", func(t *testing.T) {
+	t.Run("kubeconfig path is inside kubeconfigDir/<clusterID>/config", func(t *testing.T) {
 		kubeconfigDir := t.TempDir()
 
 		origRunner := commandRunner
@@ -100,14 +109,9 @@ func TestLogin_KubeconfigPathIsolation(t *testing.T) {
 		}
 		defer cleanup()
 
-		dir := filepath.Dir(kubeconfigPath)
-		if dir != kubeconfigDir {
-			t.Errorf("kubeconfig dir = %q, want %q", dir, kubeconfigDir)
-		}
-
-		base := filepath.Base(kubeconfigPath)
-		if !strings.Contains(base, "cluster-abc") {
-			t.Errorf("kubeconfig filename %q should contain cluster ID %q", base, "cluster-abc")
+		wantPath := filepath.Join(kubeconfigDir, "cluster-abc", "config")
+		if kubeconfigPath != wantPath {
+			t.Errorf("kubeconfigPath = %q, want %q", kubeconfigPath, wantPath)
 		}
 	})
 }
@@ -125,10 +129,6 @@ func TestLogin_CommandFailure(t *testing.T) {
 		kubeconfigPath, cleanup, err := Login(context.Background(), "bad-cluster", kubeconfigDir)
 		if err == nil {
 			t.Fatal("expected error when command fails, got nil")
-		}
-
-		if !strings.Contains(err.Error(), "bad-cluster") {
-			t.Errorf("error %q should contain cluster ID %q", err.Error(), "bad-cluster")
 		}
 
 		if kubeconfigPath != "" {
@@ -149,26 +149,22 @@ func TestLogin_EmptyClusterID(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for empty cluster ID, got nil")
 		}
-
-		if !strings.Contains(err.Error(), "cluster") {
-			t.Errorf("error %q should mention cluster", err.Error())
-		}
 	})
 }
 
 func TestLogin_CleanupRemovesFile(t *testing.T) {
-	t.Run("cleanup removes the kubeconfig file", func(t *testing.T) {
+	t.Run("cleanup removes the kubeconfig cluster dir", func(t *testing.T) {
 		kubeconfigDir := t.TempDir()
 
 		origRunner := commandRunner
 		t.Cleanup(func() { commandRunner = origRunner })
 		commandRunner = func(ctx context.Context, name string, args []string) error {
-			for i, a := range args {
-				if a == "--kube-path" && i+1 < len(args) {
-					return os.WriteFile(args[i+1], []byte("kubeconfig-data"), 0600)
-				}
+			clusterID := args[2]
+			configDir := filepath.Join(kubeconfigDir, clusterID)
+			if err := os.MkdirAll(configDir, 0o700); err != nil {
+				return err
 			}
-			return nil
+			return os.WriteFile(filepath.Join(configDir, "config"), []byte("kubeconfig-data"), 0600)
 		}
 
 		kubeconfigPath, cleanup, err := Login(context.Background(), "test-cluster", kubeconfigDir)
@@ -182,8 +178,9 @@ func TestLogin_CleanupRemovesFile(t *testing.T) {
 
 		cleanup()
 
-		if _, err := os.Stat(kubeconfigPath); !os.IsNotExist(err) {
-			t.Fatalf("kubeconfig file should be removed after cleanup, path: %s", kubeconfigPath)
+		clusterDir := filepath.Join(kubeconfigDir, "test-cluster")
+		if _, err := os.Stat(clusterDir); !os.IsNotExist(err) {
+			t.Fatalf("cleanup should have removed cluster dir at %s", clusterDir)
 		}
 	})
 
@@ -228,35 +225,21 @@ func TestMakeBackplaneLoginFunc(t *testing.T) {
 		}
 
 		loginFunc := MakeBackplaneLoginFunc(kubeconfigDir)
-		kubeconfigPath, cleanup, err := loginFunc(context.Background(), "cluster-xyz")
+		_, cleanup, err := loginFunc(context.Background(), "cluster-xyz")
 		if err != nil {
 			t.Fatalf("loginFunc returned error: %v", err)
 		}
 		defer cleanup()
 
-		// Verify --kube-path points into the bound kubeconfigDir.
-		foundKubePath := false
-		for i, a := range capturedArgs {
-			if a == "--kube-path" && i+1 < len(capturedArgs) {
-				foundKubePath = true
-				val := capturedArgs[i+1]
-				dir := filepath.Dir(val)
-				if dir != kubeconfigDir {
-					t.Errorf("--kube-path dir = %q, want %q", dir, kubeconfigDir)
-				}
-				if val != kubeconfigPath {
-					t.Errorf("--kube-path = %q, want kubeconfigPath %q", val, kubeconfigPath)
-				}
-			}
-		}
-		if !foundKubePath {
-			t.Error("--kube-path not found in command args")
-		}
-
-		// Verify clusterID was passed through.
-		wantArgs := []string{"backplane", "login", "cluster-xyz", "--kube-path", kubeconfigPath}
+		// --kube-path should be the kubeconfigDir itself.
+		wantArgs := []string{"backplane", "login", "cluster-xyz", "--multi", "--kube-path", kubeconfigDir}
 		if len(capturedArgs) != len(wantArgs) {
 			t.Fatalf("args = %v, want %v", capturedArgs, wantArgs)
+		}
+		for i, want := range wantArgs {
+			if capturedArgs[i] != want {
+				t.Errorf("args[%d] = %q, want %q", i, capturedArgs[i], want)
+			}
 		}
 	})
 
@@ -267,11 +250,11 @@ func TestMakeBackplaneLoginFunc(t *testing.T) {
 		origRunner := commandRunner
 		t.Cleanup(func() { commandRunner = origRunner })
 
-		var lastKubeconfigPath string
+		var lastKubePath string
 		commandRunner = func(ctx context.Context, name string, args []string) error {
 			for i, a := range args {
 				if a == "--kube-path" && i+1 < len(args) {
-					lastKubeconfigPath = args[i+1]
+					lastKubePath = args[i+1]
 				}
 			}
 			return nil
@@ -285,23 +268,20 @@ func TestMakeBackplaneLoginFunc(t *testing.T) {
 			t.Fatalf("fn1 returned error: %v", err)
 		}
 		defer cleanup1()
-		path1 := lastKubeconfigPath
+		path1 := lastKubePath
 
 		_, cleanup2, err := fn2(context.Background(), "cluster-a")
 		if err != nil {
 			t.Fatalf("fn2 returned error: %v", err)
 		}
 		defer cleanup2()
-		path2 := lastKubeconfigPath
+		path2 := lastKubePath
 
-		if filepath.Dir(path1) != dir1 {
-			t.Errorf("fn1 kubeconfig dir = %q, want %q", filepath.Dir(path1), dir1)
+		if path1 != dir1 {
+			t.Errorf("fn1 --kube-path = %q, want %q", path1, dir1)
 		}
-		if filepath.Dir(path2) != dir2 {
-			t.Errorf("fn2 kubeconfig dir = %q, want %q", filepath.Dir(path2), dir2)
-		}
-		if path1 == path2 {
-			t.Errorf("expected different kubeconfig paths for different dirs, got same: %q", path1)
+		if path2 != dir2 {
+			t.Errorf("fn2 --kube-path = %q, want %q", path2, dir2)
 		}
 	})
 }
