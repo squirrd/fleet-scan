@@ -61,7 +61,9 @@ type managedNamespacesCollector struct {
 
 // newManagedNamespacesCollector creates a new managed-namespaces collector.
 func newManagedNamespacesCollector() Collector {
-	return &managedNamespacesCollector{}
+	return &managedNamespacesCollector{
+		clientBuilder: newKubeClientBuilder(),
+	}
 }
 
 // Name returns the collector's registered name.
