@@ -241,6 +241,216 @@ func TestResolveTokenMultiDirFallback(t *testing.T) {
 	}
 }
 
+// backwards_compatibility: tests public API contract
+
+// TestMC111ResolveAuthWithConfigDirs_ClientID verifies that ResolveAuthWithConfigDirs
+// returns both the refresh token AND the client_id from the OCM config file.
+//
+// Bug: MC-111
+// Reproduced: NewSDKClient() omits .Client(clientID, "") when building the SDK
+// connection because the auth layer only returns a token, not a client ID.
+// The OCM CLI issues refresh tokens bound to client_id "ocm-cli", but the SDK
+// defaults to "cloud-services" when no client ID is set.
+// Expected: ResolveAuthWithConfigDirs returns (token, clientID, error) so that
+// callers can forward the client ID to NewSDKClient and the SDK connection
+// builder sets .Client(clientID, "").
+// Actual: No ResolveAuth function exists; only ResolveToken which discards
+// the client_id field from ocm.json.
+func TestMC111ResolveAuthWithConfigDirs_ClientID(t *testing.T) {
+	// Save and restore OCM_TOKEN.
+	origToken := os.Getenv("OCM_TOKEN")
+	defer os.Setenv("OCM_TOKEN", origToken)
+	os.Unsetenv("OCM_TOKEN")
+
+	tests := []struct {
+		name         string
+		configJSON   string
+		wantToken    string
+		wantClientID string
+		wantErr      bool
+		errContains  string
+	}{
+		{
+			name:         "config with client_id returns both token and client ID",
+			configJSON:   `{"refresh_token": "my-refresh-token", "client_id": "ocm-cli"}`,
+			wantToken:    "my-refresh-token",
+			wantClientID: "ocm-cli",
+		},
+		{
+			name:         "config without client_id returns empty client ID",
+			configJSON:   `{"refresh_token": "my-refresh-token"}`,
+			wantToken:    "my-refresh-token",
+			wantClientID: "",
+		},
+		{
+			name:         "config with empty client_id returns empty string",
+			configJSON:   `{"refresh_token": "my-refresh-token", "client_id": ""}`,
+			wantToken:    "my-refresh-token",
+			wantClientID: "",
+		},
+		{
+			name:         "config with custom client_id preserves it",
+			configJSON:   `{"refresh_token": "tok-123", "client_id": "my-custom-client"}`,
+			wantToken:    "tok-123",
+			wantClientID: "my-custom-client",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "ocm.json"), []byte(tt.configJSON), 0644); err != nil {
+				t.Fatalf("failed to write test config: %v", err)
+			}
+
+			gotToken, gotClientID, err := ResolveAuthWithConfigDirs([]string{dir})
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("expected error containing %q, got: %v", tt.errContains, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotToken != tt.wantToken {
+				t.Errorf("token = %q, want %q", gotToken, tt.wantToken)
+			}
+			if gotClientID != tt.wantClientID {
+				t.Errorf("clientID = %q, want %q", gotClientID, tt.wantClientID)
+			}
+		})
+	}
+}
+
+// TestMC111ResolveAuth_EnvVarReturnsEmptyClientID verifies that when OCM_TOKEN
+// env var is set, ResolveAuth returns the token with an empty client ID
+// (environment tokens have no associated client identity).
+func TestMC111ResolveAuth_EnvVarReturnsEmptyClientID(t *testing.T) {
+	origToken := os.Getenv("OCM_TOKEN")
+	defer os.Setenv("OCM_TOKEN", origToken)
+	os.Setenv("OCM_TOKEN", "env-token-xyz")
+
+	token, clientID, err := ResolveAuthWithConfigDirs([]string{filepath.Join(t.TempDir(), "nonexistent")})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token != "env-token-xyz" {
+		t.Errorf("token = %q, want %q", token, "env-token-xyz")
+	}
+	if clientID != "" {
+		t.Errorf("clientID = %q, want empty string for env var token", clientID)
+	}
+}
+
+// TestMC111ResolveAuth_MultiDirFallbackPreservesClientID verifies that when
+// multiple config dirs are provided and the first is invalid, the client_id
+// from the second valid config is returned.
+func TestMC111ResolveAuth_MultiDirFallbackPreservesClientID(t *testing.T) {
+	origToken := os.Getenv("OCM_TOKEN")
+	defer os.Setenv("OCM_TOKEN", origToken)
+	os.Unsetenv("OCM_TOKEN")
+
+	// First dir: no config file
+	dir1 := filepath.Join(t.TempDir(), "nonexistent")
+
+	// Second dir: valid config with client_id
+	dir2 := t.TempDir()
+	configJSON := `{"refresh_token": "fallback-token", "client_id": "ocm-cli"}`
+	if err := os.WriteFile(filepath.Join(dir2, "ocm.json"), []byte(configJSON), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	token, clientID, err := ResolveAuthWithConfigDirs([]string{dir1, dir2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token != "fallback-token" {
+		t.Errorf("token = %q, want %q", token, "fallback-token")
+	}
+	if clientID != "ocm-cli" {
+		t.Errorf("clientID = %q, want %q", clientID, "ocm-cli")
+	}
+}
+
+// TestMC111ParseOCMConfig_ClientIDField verifies that ParseOCMConfig correctly
+// extracts the client_id field from ocm.json into OCMConfig.ClientID.
+func TestMC111ParseOCMConfig_ClientIDField(t *testing.T) {
+	tests := []struct {
+		name         string
+		content      string
+		wantClientID string
+		wantToken    string
+	}{
+		{
+			name:         "config with client_id",
+			content:      `{"refresh_token": "tok", "client_id": "ocm-cli"}`,
+			wantClientID: "ocm-cli",
+			wantToken:    "tok",
+		},
+		{
+			name:         "config without client_id",
+			content:      `{"refresh_token": "tok"}`,
+			wantClientID: "",
+			wantToken:    "tok",
+		},
+		{
+			name:         "config with empty client_id",
+			content:      `{"refresh_token": "tok", "client_id": ""}`,
+			wantClientID: "",
+			wantToken:    "tok",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ocm.json")
+			if err := os.WriteFile(path, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("failed to write test config: %v", err)
+			}
+
+			config, err := ParseOCMConfig(path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if config.ClientID != tt.wantClientID {
+				t.Errorf("ClientID = %q, want %q", config.ClientID, tt.wantClientID)
+			}
+			if config.RefreshToken != tt.wantToken {
+				t.Errorf("RefreshToken = %q, want %q", config.RefreshToken, tt.wantToken)
+			}
+		})
+	}
+}
+
+// TestMC111ResolveAuth_TopLevelFunction verifies that ResolveAuth() (the
+// convenience wrapper using default config paths) exists and returns
+// (token, clientID, error).
+func TestMC111ResolveAuth_TopLevelFunction(t *testing.T) {
+	// Use OCM_TOKEN env to avoid needing real config files.
+	origToken := os.Getenv("OCM_TOKEN")
+	defer os.Setenv("OCM_TOKEN", origToken)
+	os.Setenv("OCM_TOKEN", "env-token-for-resolve-auth")
+
+	token, clientID, err := ResolveAuth()
+	if err != nil {
+		t.Fatalf("ResolveAuth() error: %v", err)
+	}
+	if token != "env-token-for-resolve-auth" {
+		t.Errorf("token = %q, want %q", token, "env-token-for-resolve-auth")
+	}
+	// Env var tokens have no client ID.
+	if clientID != "" {
+		t.Errorf("clientID = %q, want empty string", clientID)
+	}
+}
+
 // TestMC110OcmConfigMacosPath_Regression verifies that ResolveToken() can find
 // the OCM config file at the macOS-standard path
 // ~/Library/Application Support/ocm/ocm.json, not just ~/.config/ocm/ocm.json.
