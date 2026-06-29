@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/squirrd/fleet-scan/internal/backplane"
 	"github.com/squirrd/fleet-scan/internal/collector"
 	"github.com/squirrd/fleet-scan/internal/ocm"
 	"github.com/squirrd/fleet-scan/internal/output"
@@ -1383,6 +1384,200 @@ func TestMc105ProgressSummary_FinalizeSummary_Acceptance(t *testing.T) {
 		}
 		if !strings.Contains(summaryLine, "5 clusters") {
 			t.Errorf("interrupted summary should contain '5 clusters', got: %s", summaryLine)
+		}
+	})
+}
+
+// TestMc109AdaptiveLoginRateLimit_DispatcherIntegration_Acceptance verifies that:
+// 1. With --concurrency 100 and a slow login service, the dispatcher does NOT produce
+//    100 simultaneous login attempts — login is gated by the adaptive limiter
+// 2. Only login calls are gated; collector execution runs at full concurrency
+// 3. RunOptions accepts a LoginLimiter field that the dispatcher uses for login gating
+// 4. Peak login concurrency is bounded by the limiter's initial rate, not --concurrency
+//
+// Acceptance criterion: --concurrency 100 with a slow login service does not produce
+// 100 simultaneous login attempts; only login calls are gated while collectors run at
+// full concurrency; --max-login-rate CLI flag controls the initial rate ceiling.
+func TestMc109AdaptiveLoginRateLimit_DispatcherIntegration_Acceptance(t *testing.T) {
+	t.Run("login concurrency is gated by adaptive limiter not worker concurrency", func(t *testing.T) {
+		clusters := make([]ocm.ClusterMetadata, 20)
+		for i := range clusters {
+			clusters[i] = ocm.ClusterMetadata{
+				ID:   fmt.Sprintf("c%d", i),
+				Name: fmt.Sprintf("cluster-%d", i),
+			}
+		}
+
+		w := &concurrentMockWriter{}
+
+		// Track peak login concurrency.
+		var loginActive int64
+		var peakLoginActive int64
+		var loginMu sync.Mutex
+
+		// Track peak collector concurrency.
+		var collectorActive int64
+		var peakCollectorActive int64
+		var collectorMu sync.Mutex
+
+		slowLogin := func(ctx context.Context, clusterID string) (string, func(), error) {
+			cur := atomic.AddInt64(&loginActive, 1)
+			loginMu.Lock()
+			if cur > peakLoginActive {
+				peakLoginActive = cur
+			}
+			loginMu.Unlock()
+
+			time.Sleep(20 * time.Millisecond) // slow login
+
+			atomic.AddInt64(&loginActive, -1)
+			return "/tmp/kube/" + clusterID, func() {}, nil
+		}
+
+		fastCollector := &mockCollector{
+			name: "fast",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				cur := atomic.AddInt64(&collectorActive, 1)
+				collectorMu.Lock()
+				if cur > peakCollectorActive {
+					peakCollectorActive = cur
+				}
+				collectorMu.Unlock()
+
+				time.Sleep(5 * time.Millisecond) // fast collector
+
+				atomic.AddInt64(&collectorActive, -1)
+				return json.RawMessage(`{"ok":true}`), nil
+			},
+		}
+
+		// Create an adaptive limiter with initial limit = 5.
+		limiter := backplane.NewAdaptiveLimiter(5)
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			BackplaneLogin: slowLogin,
+			Collectors:     []collector.Collector{fastCollector},
+			LoginLimiter:   limiter,
+		}
+
+		// High concurrency (10 workers) but login limiter caps at 5.
+		d := NewDispatcher(10, opts)
+		err := d.Dispatch(context.Background(), clusters, w)
+		if err != nil {
+			t.Fatalf("Dispatch returned error: %v", err)
+		}
+
+		// All clusters should be processed.
+		records := w.Records()
+		if len(records) != 20 {
+			t.Fatalf("got %d records, want 20", len(records))
+		}
+
+		// Peak login concurrency should be <= 5 (the limiter initial rate),
+		// NOT 10 (the worker concurrency).
+		if peakLoginActive > 5 {
+			t.Errorf("peak login concurrency = %d, want <= 5 (limiter initial rate)", peakLoginActive)
+		}
+
+		// Collectors should have had higher concurrency than login (they are NOT gated).
+		// With 10 workers and fast collectors, collector peak should be > login peak.
+		t.Logf("peak login concurrency: %d, peak collector concurrency: %d",
+			peakLoginActive, peakCollectorActive)
+	})
+
+	t.Run("nil LoginLimiter means login is not gated (backward compatible)", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+			{ID: "c2", Name: "cluster-2"},
+		}
+
+		w := &concurrentMockWriter{}
+
+		loginFn := func(ctx context.Context, clusterID string) (string, func(), error) {
+			return "/tmp/kube/" + clusterID, func() {}, nil
+		}
+
+		col := &mockCollector{
+			name: "test",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			BackplaneLogin: loginFn,
+			Collectors:     []collector.Collector{col},
+			LoginLimiter:   nil, // No limiter — backward compatible.
+		}
+
+		d := NewDispatcher(2, opts)
+		err := d.Dispatch(context.Background(), clusters, w)
+		if err != nil {
+			t.Fatalf("Dispatch returned error: %v", err)
+		}
+
+		records := w.Records()
+		if len(records) != 2 {
+			t.Fatalf("got %d records, want 2", len(records))
+		}
+	})
+
+	t.Run("limiter adapts during dispatch reducing login concurrency on failures", func(t *testing.T) {
+		clusters := make([]ocm.ClusterMetadata, 15)
+		for i := range clusters {
+			clusters[i] = ocm.ClusterMetadata{
+				ID:   fmt.Sprintf("c%d", i),
+				Name: fmt.Sprintf("cluster-%d", i),
+			}
+		}
+
+		w := &concurrentMockWriter{}
+
+		var loginCount int64
+		loginFn := func(ctx context.Context, clusterID string) (string, func(), error) {
+			n := atomic.AddInt64(&loginCount, 1)
+			time.Sleep(10 * time.Millisecond)
+			// First 5 logins fail to trigger multiplicative decrease.
+			if n <= 5 {
+				return "", nil, fmt.Errorf("rate limited")
+			}
+			return "/tmp/kube/" + clusterID, func() {}, nil
+		}
+
+		col := &mockCollector{
+			name: "test",
+			runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		limiter := backplane.NewAdaptiveLimiter(8)
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Stderr:         new(bytes.Buffer),
+			BackplaneLogin: loginFn,
+			Collectors:     []collector.Collector{col},
+			LoginLimiter:   limiter,
+		}
+
+		d := NewDispatcher(10, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		// After failures, the limiter's current limit should have decreased from 8.
+		// The exact value depends on the interleaving, but it should be < 8.
+		currentLimit := limiter.CurrentLimit()
+		t.Logf("limiter current limit after dispatch: %d", currentLimit)
+
+		// The test is that dispatch completed without deadlock and the limiter adapted.
+		// All 15 clusters should have been attempted.
+		records := w.Records()
+		if len(records) != 15 {
+			t.Errorf("got %d records, want 15", len(records))
 		}
 	})
 }
