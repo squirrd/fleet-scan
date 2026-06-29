@@ -108,18 +108,48 @@ func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster
 	var kubeconfigPath string
 	loginFailed := false
 	if d.opts.BackplaneLogin != nil {
-		kp, cleanup, loginErr := d.opts.BackplaneLogin(clusterCtx, cluster.ID)
-		clusterCleanup = cleanup
-		if loginErr != nil {
-			loginFailed = true
-			for _, c := range d.opts.Collectors {
-				rec.ClusterResult[c.Name()] = output.CollectorResult{
-					Status: "skipped",
-					Error:  loginErr.Error(),
+		// Acquire login limiter slot if configured.
+		if d.opts.LoginLimiter != nil {
+			if err := d.opts.LoginLimiter.Acquire(clusterCtx); err != nil {
+				// Context cancelled while waiting for limiter slot.
+				loginFailed = true
+				for _, c := range d.opts.Collectors {
+					rec.ClusterResult[c.Name()] = output.CollectorResult{
+						Status: "skipped",
+						Error:  err.Error(),
+					}
 				}
 			}
-		} else {
-			kubeconfigPath = kp
+		}
+
+		if !loginFailed {
+			kp, cleanup, loginErr := d.opts.BackplaneLogin(clusterCtx, cluster.ID)
+			clusterCleanup = cleanup
+
+			// Release limiter slot after login completes.
+			if d.opts.LoginLimiter != nil {
+				d.opts.LoginLimiter.Release()
+			}
+
+			if loginErr != nil {
+				loginFailed = true
+				// Record login failure in the limiter.
+				if d.opts.LoginLimiter != nil {
+					d.opts.LoginLimiter.RecordFailure()
+				}
+				for _, c := range d.opts.Collectors {
+					rec.ClusterResult[c.Name()] = output.CollectorResult{
+						Status: "skipped",
+						Error:  loginErr.Error(),
+					}
+				}
+			} else {
+				kubeconfigPath = kp
+				// Record login success in the limiter.
+				if d.opts.LoginLimiter != nil {
+					d.opts.LoginLimiter.RecordSuccess()
+				}
+			}
 		}
 	}
 

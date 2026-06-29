@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/squirrd/fleet-scan/internal/backplane"
 	"github.com/squirrd/fleet-scan/internal/collector"
 	"github.com/squirrd/fleet-scan/internal/ocm"
 	"github.com/squirrd/fleet-scan/internal/output"
@@ -26,6 +27,7 @@ type RunOptions struct {
 	Stderr         io.Writer
 	BackplaneLogin BackplaneLoginFunc
 	Collectors     []collector.Collector
+	LoginLimiter   *backplane.AdaptiveLimiter // optional; gates login concurrency via AIMD
 }
 
 // Run iterates over clusters, runs configured collectors against each, and writes

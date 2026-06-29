@@ -1388,6 +1388,381 @@ func TestMc105ProgressSummary_FinalizeSummary_Acceptance(t *testing.T) {
 	})
 }
 
+// backwards_compatibility: tests public API contract
+
+// TestProcessCluster_LoginLimiter_AcquireRelease verifies that when LoginLimiter
+// is set on RunOptions, processCluster calls Acquire before BackplaneLogin and
+// Release after it returns (regardless of success or failure). This ensures login
+// concurrency is properly gated through the limiter.
+func TestProcessCluster_LoginLimiter_AcquireRelease(t *testing.T) {
+	tests := []struct {
+		name       string
+		loginErr   error
+		wantStatus string // "success" or "skipped"
+	}{
+		{
+			name:       "acquire and release called around successful login",
+			loginErr:   nil,
+			wantStatus: "success",
+		},
+		{
+			name:       "acquire and release called around failed login",
+			loginErr:   fmt.Errorf("rate limited"),
+			wantStatus: "skipped",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clusters := []ocm.ClusterMetadata{
+				{ID: "c1", Name: "cluster-1"},
+			}
+
+			w := &concurrentMockWriter{}
+
+			// Use real AdaptiveLimiter with max=1 to prove acquire/release.
+			limiter := backplane.NewAdaptiveLimiter(1)
+
+			var loginCalled bool
+			loginFn := func(ctx context.Context, clusterID string) (string, func(), error) {
+				loginCalled = true
+				if tt.loginErr != nil {
+					return "", nil, tt.loginErr
+				}
+				return "/tmp/kube/" + clusterID, func() {}, nil
+			}
+
+			col := &mockCollector{
+				name: "test",
+				runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+					return json.RawMessage(`{}`), nil
+				},
+			}
+
+			opts := RunOptions{
+				ClusterTimeout: 30 * time.Second,
+				Stderr:         new(bytes.Buffer),
+				BackplaneLogin: loginFn,
+				Collectors:     []collector.Collector{col},
+				LoginLimiter:   limiter,
+			}
+
+			d := NewDispatcher(1, opts)
+			err := d.Dispatch(context.Background(), clusters, w)
+			if err != nil {
+				t.Fatalf("Dispatch returned error: %v", err)
+			}
+
+			if !loginCalled {
+				t.Fatal("BackplaneLogin was not called")
+			}
+
+			records := w.Records()
+			if len(records) != 1 {
+				t.Fatalf("got %d records, want 1", len(records))
+			}
+
+			// Verify limiter released its slot (inflight back to 0).
+			// Acquiring again should succeed immediately, proving Release was called.
+			acquireCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+			defer cancel()
+			if err := limiter.Acquire(acquireCtx); err != nil {
+				t.Errorf("Acquire after dispatch timed out — Release was not called: %v", err)
+			} else {
+				limiter.Release()
+			}
+
+			// Check the record status.
+			result := records[0].ClusterResult["test"]
+			if result.Status != tt.wantStatus {
+				t.Errorf("collector status = %q, want %q", result.Status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// TestProcessCluster_LoginLimiter_RecordSuccessOnSuccess verifies that when
+// BackplaneLogin succeeds, the dispatcher calls limiter.RecordSuccess().
+func TestProcessCluster_LoginLimiter_RecordSuccessOnSuccess(t *testing.T) {
+	clusters := []ocm.ClusterMetadata{
+		{ID: "c1", Name: "cluster-1"},
+	}
+
+	w := &concurrentMockWriter{}
+
+	// Start with limit reduced to 1 so RecordSuccess increases it.
+	limiter := backplane.NewAdaptiveLimiter(10)
+	// Simulate previous failures that reduced the limit.
+	for i := 0; i < 5; i++ {
+		limiter.RecordFailure()
+	}
+	limitBefore := limiter.CurrentLimit()
+
+	loginFn := func(ctx context.Context, clusterID string) (string, func(), error) {
+		return "/tmp/kube/" + clusterID, func() {}, nil
+	}
+
+	col := &mockCollector{
+		name: "test",
+		runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		},
+	}
+
+	opts := RunOptions{
+		ClusterTimeout: 30 * time.Second,
+		Stderr:         new(bytes.Buffer),
+		BackplaneLogin: loginFn,
+		Collectors:     []collector.Collector{col},
+		LoginLimiter:   limiter,
+	}
+
+	d := NewDispatcher(1, opts)
+	_ = d.Dispatch(context.Background(), clusters, w)
+
+	// After a successful login, RecordSuccess should have increased the limit.
+	limitAfter := limiter.CurrentLimit()
+	if limitAfter <= limitBefore {
+		t.Errorf("limiter limit after success = %d, should be > %d (RecordSuccess not called)",
+			limitAfter, limitBefore)
+	}
+}
+
+// TestProcessCluster_LoginLimiter_RecordFailureOnFailure verifies that when
+// BackplaneLogin fails, the dispatcher calls limiter.RecordFailure().
+func TestProcessCluster_LoginLimiter_RecordFailureOnFailure(t *testing.T) {
+	clusters := []ocm.ClusterMetadata{
+		{ID: "c1", Name: "cluster-1"},
+	}
+
+	w := &concurrentMockWriter{}
+
+	// Start at max limit so RecordFailure decreases it.
+	limiter := backplane.NewAdaptiveLimiter(8)
+	limitBefore := limiter.CurrentLimit() // should be 8
+
+	loginFn := func(ctx context.Context, clusterID string) (string, func(), error) {
+		return "", nil, fmt.Errorf("rate limited")
+	}
+
+	col := &mockCollector{
+		name: "test",
+		runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		},
+	}
+
+	opts := RunOptions{
+		ClusterTimeout: 30 * time.Second,
+		Stderr:         new(bytes.Buffer),
+		BackplaneLogin: loginFn,
+		Collectors:     []collector.Collector{col},
+		LoginLimiter:   limiter,
+	}
+
+	d := NewDispatcher(1, opts)
+	_ = d.Dispatch(context.Background(), clusters, w)
+
+	// After a failed login, RecordFailure should have halved the limit.
+	limitAfter := limiter.CurrentLimit()
+	if limitAfter >= limitBefore {
+		t.Errorf("limiter limit after failure = %d, should be < %d (RecordFailure not called)",
+			limitAfter, limitBefore)
+	}
+	// AIMD halves: 8 → 4.
+	if limitAfter != limitBefore/2 {
+		t.Errorf("limiter limit after failure = %d, want %d (8/2)", limitAfter, limitBefore/2)
+	}
+}
+
+// TestProcessCluster_NilLoginLimiter_BackwardCompatible verifies that when
+// LoginLimiter is nil, login proceeds without any limiter calls and all
+// existing behavior is preserved. This is the backward-compatibility test.
+// backwards_compatibility: tests public API contract
+func TestProcessCluster_NilLoginLimiter_BackwardCompatible(t *testing.T) {
+	clusters := []ocm.ClusterMetadata{
+		{ID: "c1", Name: "cluster-1"},
+		{ID: "c2", Name: "cluster-2"},
+	}
+
+	w := &concurrentMockWriter{}
+
+	var loginIDs []string
+	var loginMu sync.Mutex
+	loginFn := func(ctx context.Context, clusterID string) (string, func(), error) {
+		loginMu.Lock()
+		loginIDs = append(loginIDs, clusterID)
+		loginMu.Unlock()
+		return "/tmp/kube/" + clusterID, func() {}, nil
+	}
+
+	col := &mockCollector{
+		name: "test",
+		runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		},
+	}
+
+	opts := RunOptions{
+		ClusterTimeout: 30 * time.Second,
+		Stderr:         new(bytes.Buffer),
+		BackplaneLogin: loginFn,
+		Collectors:     []collector.Collector{col},
+		LoginLimiter:   nil, // explicitly nil — no limiter
+	}
+
+	d := NewDispatcher(2, opts)
+	err := d.Dispatch(context.Background(), clusters, w)
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	records := w.Records()
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+
+	// Both logins should have been called.
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	if len(loginIDs) != 2 {
+		t.Fatalf("expected 2 login calls, got %d", len(loginIDs))
+	}
+
+	// All results should be successful.
+	for _, rec := range records {
+		result := rec.ClusterResult["test"]
+		if result.Status != "success" {
+			t.Errorf("cluster %s: status = %q, want %q", rec.ClusterMetadata.ID, result.Status, "success")
+		}
+	}
+}
+
+// TestProcessCluster_LoginLimiter_AcquireCancelled verifies that if the
+// limiter's Acquire blocks and the context is cancelled, the cluster is
+// handled gracefully (no deadlock, no panic).
+func TestProcessCluster_LoginLimiter_AcquireCancelled(t *testing.T) {
+	clusters := make([]ocm.ClusterMetadata, 5)
+	for i := range clusters {
+		clusters[i] = ocm.ClusterMetadata{
+			ID:   fmt.Sprintf("c%d", i),
+			Name: fmt.Sprintf("cluster-%d", i),
+		}
+	}
+
+	w := &concurrentMockWriter{}
+
+	// Limiter with max=1, but login is slow — combined with context cancellation
+	// this will cause some Acquire calls to fail.
+	limiter := backplane.NewAdaptiveLimiter(1)
+
+	loginFn := func(ctx context.Context, clusterID string) (string, func(), error) {
+		select {
+		case <-time.After(50 * time.Millisecond):
+			return "/tmp/kube/" + clusterID, func() {}, nil
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
+		}
+	}
+
+	col := &mockCollector{
+		name: "test",
+		runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		},
+	}
+
+	opts := RunOptions{
+		ClusterTimeout: 30 * time.Second,
+		Stderr:         new(bytes.Buffer),
+		BackplaneLogin: loginFn,
+		Collectors:     []collector.Collector{col},
+		LoginLimiter:   limiter,
+	}
+
+	d := NewDispatcher(3, opts)
+
+	// Cancel quickly so some clusters get Acquire-cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	// This should not panic or deadlock.
+	_ = d.Dispatch(ctx, clusters, w)
+
+	// Some records may have been written, some may not — the point is no deadlock.
+	t.Logf("processed %d of %d clusters before cancellation", len(w.Records()), len(clusters))
+}
+
+// TestProcessCluster_LoginLimiter_GatesConcurrentLogins verifies that with high
+// worker concurrency but a low limiter max, peak login concurrency stays bounded.
+func TestProcessCluster_LoginLimiter_GatesConcurrentLogins(t *testing.T) {
+	const workerConcurrency = 8
+	const limiterMax = 2
+
+	clusters := make([]ocm.ClusterMetadata, 16)
+	for i := range clusters {
+		clusters[i] = ocm.ClusterMetadata{
+			ID:   fmt.Sprintf("c%d", i),
+			Name: fmt.Sprintf("cluster-%d", i),
+		}
+	}
+
+	w := &concurrentMockWriter{}
+
+	var loginActive int64
+	var peakLogin int64
+	var loginMu sync.Mutex
+
+	limiter := backplane.NewAdaptiveLimiter(limiterMax)
+
+	loginFn := func(ctx context.Context, clusterID string) (string, func(), error) {
+		cur := atomic.AddInt64(&loginActive, 1)
+		loginMu.Lock()
+		if cur > peakLogin {
+			peakLogin = cur
+		}
+		loginMu.Unlock()
+
+		time.Sleep(15 * time.Millisecond) // slow login
+
+		atomic.AddInt64(&loginActive, -1)
+		return "/tmp/kube/" + clusterID, func() {}, nil
+	}
+
+	col := &mockCollector{
+		name: "test",
+		runFn: func(ctx context.Context, clusterID, kubeconfigPath string) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		},
+	}
+
+	opts := RunOptions{
+		ClusterTimeout: 30 * time.Second,
+		Stderr:         new(bytes.Buffer),
+		BackplaneLogin: loginFn,
+		Collectors:     []collector.Collector{col},
+		LoginLimiter:   limiter,
+	}
+
+	d := NewDispatcher(workerConcurrency, opts)
+	err := d.Dispatch(context.Background(), clusters, w)
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	if len(w.Records()) != 16 {
+		t.Fatalf("got %d records, want 16", len(w.Records()))
+	}
+
+	// Peak login concurrency should be bounded by limiter, NOT worker concurrency.
+	if peakLogin > int64(limiterMax) {
+		t.Errorf("peak login concurrency = %d, want <= %d (limiter max)", peakLogin, limiterMax)
+	}
+	if peakLogin < 1 {
+		t.Error("peak login concurrency = 0, login was never called")
+	}
+}
+
 // TestMc109AdaptiveLoginRateLimit_DispatcherIntegration_Acceptance verifies that:
 // 1. With --concurrency 100 and a slow login service, the dispatcher does NOT produce
 //    100 simultaneous login attempts — login is gated by the adaptive limiter
