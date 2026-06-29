@@ -135,12 +135,12 @@ func runScan(cmd *cobra.Command, args []string) error {
 		collectors = append(collectors, c)
 	}
 
-	token, err := ocm.ResolveToken()
+	token, clientID, err := ocm.ResolveAuth()
 	if err != nil {
 		return err
 	}
 
-	client, err := ocm.NewSDKClient(token)
+	client, err := ocm.NewSDKClient(token, clientID)
 	if err != nil {
 		return err
 	}

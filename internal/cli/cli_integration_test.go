@@ -76,6 +76,12 @@ func TestPhase2Output_CliWiring_Acceptance(t *testing.T) {
 	})
 
 	t.Run("resume reads search from meta.json", func(t *testing.T) {
+		// Force a dummy OCM_TOKEN so auth fails fast rather than using
+		// real credentials (which would make a live API call and hang).
+		origToken := os.Getenv("OCM_TOKEN")
+		t.Setenv("OCM_TOKEN", "dummy-token-for-test")
+		defer os.Setenv("OCM_TOKEN", origToken)
+
 		// Create a fake run directory with meta.json
 		tmpDir := t.TempDir()
 		runDir := filepath.Join(tmpDir, "2024-06-15T143000")

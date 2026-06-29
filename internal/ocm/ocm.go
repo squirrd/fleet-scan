@@ -12,10 +12,13 @@ type sdkClient struct {
 	conn *sdk.Connection
 }
 
-func NewSDKClient(token string) (OCMClient, error) {
-	conn, err := sdk.NewConnectionBuilder().
-		Tokens(token).
-		Build()
+func NewSDKClient(token string, clientID string) (OCMClient, error) {
+	builder := sdk.NewConnectionBuilder().
+		Tokens(token)
+	if clientID != "" {
+		builder = builder.Client(clientID, "")
+	}
+	conn, err := builder.Build()
 	if err != nil {
 		return nil, fmt.Errorf("building OCM connection: %w", err)
 	}
