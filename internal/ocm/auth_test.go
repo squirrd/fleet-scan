@@ -161,3 +161,134 @@ func TestParseOCMConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveTokenMultiDirFallback verifies that ResolveTokenWithConfigDirs
+// tries multiple config directories in order and returns the token from the
+// first directory that contains a valid ocm.json.
+func TestResolveTokenMultiDirFallback(t *testing.T) {
+	// Save and restore OCM_TOKEN.
+	origToken := os.Getenv("OCM_TOKEN")
+	defer os.Setenv("OCM_TOKEN", origToken)
+	os.Unsetenv("OCM_TOKEN")
+
+	tests := []struct {
+		name      string
+		// setupDirs returns config directories; each entry is (dirPath, configJSON).
+		// If configJSON is empty, no file is created in that dir.
+		setupDirs func(t *testing.T) []string
+		wantToken string
+		wantErr   bool
+	}{
+		{
+			name: "first dir has config — returns its token",
+			setupDirs: func(t *testing.T) []string {
+				dir1 := t.TempDir()
+				os.WriteFile(filepath.Join(dir1, "ocm.json"), []byte(`{"refresh_token":"first-token"}`), 0644)
+				dir2 := t.TempDir() // second dir exists but has no config
+				return []string{dir1, dir2}
+			},
+			wantToken: "first-token",
+		},
+		{
+			name: "first dir empty, second has config — returns second",
+			setupDirs: func(t *testing.T) []string {
+				dir1 := filepath.Join(t.TempDir(), "nonexistent")
+				dir2 := t.TempDir()
+				os.WriteFile(filepath.Join(dir2, "ocm.json"), []byte(`{"refresh_token":"second-token"}`), 0644)
+				return []string{dir1, dir2}
+			},
+			wantToken: "second-token",
+		},
+		{
+			name: "no dirs have config — returns error",
+			setupDirs: func(t *testing.T) []string {
+				return []string{
+					filepath.Join(t.TempDir(), "nonexistent1"),
+					filepath.Join(t.TempDir(), "nonexistent2"),
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "single dir with config — works like single-dir case",
+			setupDirs: func(t *testing.T) []string {
+				dir := t.TempDir()
+				os.WriteFile(filepath.Join(dir, "ocm.json"), []byte(`{"refresh_token":"only-token"}`), 0644)
+				return []string{dir}
+			},
+			wantToken: "only-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dirs := tt.setupDirs(t)
+			got, err := ResolveTokenWithConfigDirs(dirs)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantToken {
+				t.Errorf("got token %q, want %q", got, tt.wantToken)
+			}
+		})
+	}
+}
+
+// TestMC110OcmConfigMacosPath_Regression verifies that ResolveToken() can find
+// the OCM config file at the macOS-standard path
+// ~/Library/Application Support/ocm/ocm.json, not just ~/.config/ocm/ocm.json.
+//
+// Bug: MC-110
+// Reproduced: ResolveToken() hardcodes ~/.config/ocm; on macOS the ocm CLI
+// writes to ~/Library/Application Support/ocm, so the fallback path never
+// finds the file.
+// Expected: ResolveToken() checks both XDG (~/.config/ocm) and macOS
+// (~/Library/Application Support/ocm) config paths, returning the token
+// from whichever location has a valid config file.
+// Actual: ResolveToken() only checks ~/.config/ocm and returns an error
+// when the config exists only at the macOS Application Support path.
+func TestMC110OcmConfigMacosPath_Regression(t *testing.T) {
+	// Ensure OCM_TOKEN is unset so we fall through to config file lookup.
+	origToken := os.Getenv("OCM_TOKEN")
+	defer os.Setenv("OCM_TOKEN", origToken)
+	os.Unsetenv("OCM_TOKEN")
+
+	// Create a fake HOME with the config ONLY at the macOS path.
+	fakeHome := t.TempDir()
+	macOSConfigDir := filepath.Join(fakeHome, "Library", "Application Support", "ocm")
+	if err := os.MkdirAll(macOSConfigDir, 0755); err != nil {
+		t.Fatalf("failed to create macOS config dir: %v", err)
+	}
+	configContent := `{"refresh_token": "macos-token-abc123"}`
+	if err := os.WriteFile(filepath.Join(macOSConfigDir, "ocm.json"), []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	// Verify the Linux/XDG path does NOT exist.
+	linuxConfigPath := filepath.Join(fakeHome, ".config", "ocm", "ocm.json")
+	if _, err := os.Stat(linuxConfigPath); err == nil {
+		t.Fatal("linux config path should not exist in this test setup")
+	}
+
+	// Point HOME to our fake home so ResolveToken() uses it.
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", fakeHome)
+
+	// Call the real ResolveToken() -- it should find the macOS config.
+	token, err := ResolveToken()
+	if err != nil {
+		t.Fatalf("ResolveToken() should find config at macOS path, but got error: %v", err)
+	}
+
+	if token != "macos-token-abc123" {
+		t.Errorf("expected token %q, got %q", "macos-token-abc123", token)
+	}
+}

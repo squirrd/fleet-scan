@@ -8,20 +8,44 @@ import (
 )
 
 func ResolveToken() (string, error) {
-	return ResolveTokenWithConfigDir(filepath.Join(os.Getenv("HOME"), ".config", "ocm"))
+	home := os.Getenv("HOME")
+	return ResolveTokenWithConfigDirs([]string{
+		filepath.Join(home, ".config", "ocm"),
+		filepath.Join(home, "Library", "Application Support", "ocm"),
+	})
 }
 
+// ResolveTokenWithConfigDir checks a single config directory for an OCM token.
+// Kept for backwards compatibility; prefer ResolveTokenWithConfigDirs.
 func ResolveTokenWithConfigDir(configDir string) (string, error) {
+	return ResolveTokenWithConfigDirs([]string{configDir})
+}
+
+// ResolveTokenWithConfigDirs resolves an OCM token by checking, in order:
+//  1. OCM_TOKEN environment variable
+//  2. Each config directory for a valid ocm.json containing a refresh_token
+//
+// Returns an error only if none of the sources yield a token.
+func ResolveTokenWithConfigDirs(configDirs []string) (string, error) {
 	if token := os.Getenv("OCM_TOKEN"); token != "" {
 		return token, nil
 	}
 
-	configPath := filepath.Join(configDir, "ocm.json")
-	cfg, err := ParseOCMConfig(configPath)
-	if err != nil {
-		return "", fmt.Errorf("no OCM token found: set OCM_TOKEN or run `ocm login`: %w", err)
+	var lastErr error
+	for _, dir := range configDirs {
+		configPath := filepath.Join(dir, "ocm.json")
+		cfg, err := ParseOCMConfig(configPath)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return cfg.RefreshToken, nil
 	}
-	return cfg.RefreshToken, nil
+
+	if lastErr != nil {
+		return "", fmt.Errorf("no OCM token found: set OCM_TOKEN or run `ocm login`: %w", lastErr)
+	}
+	return "", fmt.Errorf("no OCM token found: set OCM_TOKEN or run `ocm login`: no config directories to search")
 }
 
 type OCMConfig struct {
