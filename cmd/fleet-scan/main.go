@@ -9,7 +9,7 @@ import (
 	_ "github.com/squirrd/fleet-scan/internal/collector"
 )
 
-const version = "0.1.2"
+const version = "0.1.3"
 
 func main() {
 	if err := cli.NewRootCommand(version).Execute(); err != nil {
