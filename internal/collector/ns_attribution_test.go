@@ -255,6 +255,116 @@ func TestMc118NsAttribution_MetadataExtraction_Acceptance(t *testing.T) {
 	}
 }
 
+// TestNsAttribution_SlimManagedFields verifies that when managedFields is in the
+// configured fields, the output retains only manager, operation, time, apiVersion,
+// and subresource — stripping the bulky fieldsV1 data.
+func TestNsAttribution_SlimManagedFields(t *testing.T) {
+	c := newNsAttributionCollector()
+	if err := c.Configure(map[string]string{
+		"patterns": "openshift-*",
+		"fields":   "name,kind,managedFields",
+	}); err != nil {
+		t.Fatalf("Configure error: %v", err)
+	}
+	nc := c.(*nsAttributionCollector)
+
+	fakeObjects := map[string]map[string][]json.RawMessage{
+		"openshift-monitoring": {
+			"Pods": {
+				json.RawMessage(`{
+					"apiVersion": "v1",
+					"kind": "Pod",
+					"metadata": {
+						"name": "prometheus-0",
+						"namespace": "openshift-monitoring",
+						"managedFields": [
+							{
+								"manager": "kube-controller-manager",
+								"operation": "Update",
+								"time": "2024-01-15T10:00:00Z",
+								"apiVersion": "v1",
+								"fieldsType": "FieldsV1",
+								"fieldsV1": {"f:metadata":{"f:labels":{".":{},"f:app":{}}}}
+							},
+							{
+								"manager": "kubelet",
+								"operation": "Update",
+								"time": "2024-01-15T10:01:00Z",
+								"apiVersion": "v1",
+								"subresource": "status",
+								"fieldsType": "FieldsV1",
+								"fieldsV1": {"f:status":{"f:conditions":{},"f:phase":{}}}
+							}
+						]
+					},
+					"spec": {"containers": [{"name": "prometheus"}]},
+					"status": {"phase": "Running"}
+				}`),
+			},
+		},
+	}
+
+	nc.attrClientBuilder = fakeNsAttrClientBuilder(fakeObjects)
+
+	data, err := nc.Run(context.Background(), "cluster-slim", "/fake/kubeconfig")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	var result struct {
+		Resources []map[string]interface{} `json:"resources"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if len(result.Resources) != 1 {
+		t.Fatalf("expected 1 resource, got %d", len(result.Resources))
+	}
+
+	r := result.Resources[0]
+	mf, ok := r["managedFields"]
+	if !ok {
+		t.Fatal("expected managedFields in output")
+	}
+
+	entries, ok := mf.([]interface{})
+	if !ok {
+		t.Fatalf("managedFields should be an array, got %T", mf)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 managedFields entries, got %d", len(entries))
+	}
+
+	for i, entry := range entries {
+		m, ok := entry.(map[string]interface{})
+		if !ok {
+			t.Fatalf("entry %d should be a map", i)
+		}
+		if _, ok := m["fieldsV1"]; ok {
+			t.Errorf("entry %d should not contain fieldsV1", i)
+		}
+		if _, ok := m["fieldsType"]; ok {
+			t.Errorf("entry %d should not contain fieldsType", i)
+		}
+		if _, ok := m["manager"]; !ok {
+			t.Errorf("entry %d missing manager", i)
+		}
+		if _, ok := m["operation"]; !ok {
+			t.Errorf("entry %d missing operation", i)
+		}
+		if _, ok := m["time"]; !ok {
+			t.Errorf("entry %d missing time", i)
+		}
+	}
+
+	// Verify second entry has subresource preserved.
+	second := entries[1].(map[string]interface{})
+	if second["subresource"] != "status" {
+		t.Errorf("second entry subresource = %v, want status", second["subresource"])
+	}
+}
+
 // TestMc118NsAttribution_KubeClientWiring_Acceptance verifies that:
 // 1. The collector builds dynamic+discovery clients from a kubeconfig path
 //    via newNsAttrKubeClientBuilder() which returns an attrClientBuilderFunc

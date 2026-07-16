@@ -123,7 +123,11 @@ func (c *nsAttributionCollector) extractFields(raw json.RawMessage) (map[string]
 			}
 		} else if metadata != nil {
 			if v, ok := metadata[field]; ok {
-				result[field] = v
+				if field == "managedFields" {
+					result[field] = slimManagedFields(v)
+				} else {
+					result[field] = v
+				}
 			}
 		}
 	}
@@ -175,6 +179,30 @@ func (c *nsAttributionCollector) Run(ctx context.Context, clusterID, kubeconfigP
 	}
 
 	return json.Marshal(result)
+}
+
+// slimManagedFields strips the bulky fieldsV1 data from managedFields entries,
+// keeping only manager, operation, and time.
+func slimManagedFields(v interface{}) interface{} {
+	entries, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	slim := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		m, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		s := make(map[string]interface{})
+		for _, key := range []string{"manager", "operation", "time", "apiVersion", "subresource"} {
+			if val, ok := m[key]; ok {
+				s[key] = val
+			}
+		}
+		slim = append(slim, s)
+	}
+	return slim
 }
 
 func init() {
