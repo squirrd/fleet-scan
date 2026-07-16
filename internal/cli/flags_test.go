@@ -10,7 +10,7 @@ import (
 )
 
 // TestParseCollectorSpecs uses table-driven tests to verify parsing of
-// --collector flag values in the format name:key=val,key2=val2.
+// --collector flag values in the format name:key=val;key2=val2.
 func TestParseCollectorSpecs(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -35,11 +35,21 @@ func TestParseCollectorSpecs(t *testing.T) {
 		},
 		{
 			name:  "name with multiple params",
-			input: []string{"managed-namespaces:patterns=openshift-*,kinds=Pods"},
+			input: []string{"managed-namespaces:patterns=openshift-*;kinds=Pods"},
 			want: []CollectorSpec{
 				{Name: "managed-namespaces", Params: map[string]string{
 					"patterns": "openshift-*",
 					"kinds":    "Pods",
+				}},
+			},
+		},
+		{
+			name:  "commas in param values are preserved",
+			input: []string{"ns-attribution:kinds=Deployments,StatefulSets,DaemonSets;patterns=openshift-*,kube-system"},
+			want: []CollectorSpec{
+				{Name: "ns-attribution", Params: map[string]string{
+					"kinds":    "Deployments,StatefulSets,DaemonSets",
+					"patterns": "openshift-*,kube-system",
 				}},
 			},
 		},

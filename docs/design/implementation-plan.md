@@ -47,7 +47,7 @@ Create the repo, Go module, Cobra CLI, OCM auth, paginated cluster listing. Afte
 - OCM auth: check `OCM_TOKEN` env var first, fallback to `refresh_token` field from `~/.config/ocm/ocm.json`. Both paths use `connection.Tokens()`. No client credentials support.
 - Pagination: page size 100, use `response.Total()` to know target count. Break when collected >= total. For `--dry-run`, single `size=1` request to get `Total()` without fetching all pages
 - `ClusterMetadata`: 12 hardcoded fields with `json` tags. Comment: `// TODO: add --metadata-fields flag`
-- `ParseCollectorSpecs()`: parses `name:key=val,key2=val2` syntax
+- `ParseCollectorSpecs()`: parses `name:key=val;key2=val2` syntax
 - Validation: at least one `--collector` required unless `--dry-run`
 
 **Verify:** `fleet-scan scan --search="managed='true'" --dry-run` → prints cluster count

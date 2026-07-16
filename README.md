@@ -38,7 +38,7 @@ fleet-scan scan --resume output/2024-06-15T143000/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--search` | (required) | OCM search query string |
-| `--collector` | (required) | Collector spec in `name:key=val,key2=val2` format (repeatable) |
+| `--collector` | (required) | Collector spec in `name:key=val;key2=val2` format (repeatable) |
 | `--concurrency` | `1` | Number of clusters to process concurrently |
 | `--cluster-timeout` | `120` | Per-cluster timeout in seconds |
 | `--output-dir` | `./output/` | Output directory for results |

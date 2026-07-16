@@ -25,7 +25,7 @@ func ParseCollectorSpecs(specs []string) ([]CollectorSpec, error) {
 		if idx := strings.Index(raw, ":"); idx >= 0 {
 			name = raw[:idx]
 			paramStr := raw[idx+1:]
-			for _, kv := range strings.Split(paramStr, ",") {
+			for _, kv := range strings.Split(paramStr, ";") {
 				eqIdx := strings.Index(kv, "=")
 				if eqIdx < 0 {
 					return nil, fmt.Errorf("invalid collector param %q: missing = separator", kv)

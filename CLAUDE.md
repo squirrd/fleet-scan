@@ -34,7 +34,7 @@ make lint
 - Entry: `cmd/fleet-scan/main.go` — blank-imports collector packages to trigger `init()` registration
 
 ### Core Packages (`internal/`)
-- **cli/** — Cobra command tree. `root.go` (root cmd), `scan.go` (scan subcommand + signal handling), `flags.go` (flag types, `ParseCollectorSpecs()` for `name:key=val` syntax)
+- **cli/** — Cobra command tree. `root.go` (root cmd), `scan.go` (scan subcommand + signal handling), `flags.go` (flag types, `ParseCollectorSpecs()` for `name:key=val;key2=val2` syntax)
 - **ocm/** — OCM SDK integration. `auth.go` (token from `OCM_TOKEN` env → `~/.config/ocm/ocm.json` fallback), `clusters.go` (paginated listing, page size 100), `types.go` (`ClusterMetadata` with 12 hardcoded fields)
 - **backplane/** — `login.go`: shell-execs `ocm backplane login`, returns `(kubeconfigPath, cleanup, error)` with isolated temp kubeconfig per cluster
 - **collector/** — `registry.go`: `Collector` interface + `Register(name, factory)` pattern. Collectors auto-register via `init()`. Each collector gets `(ctx, clusterID, kubeconfigPath)` and returns `json.RawMessage`

@@ -44,7 +44,7 @@ func newScanCommand() *cobra.Command {
 	}
 
 	cmd.Flags().String("search", "", "OCM search query string")
-	cmd.Flags().StringSlice("collector", nil, "Collector spec (name:key=val,key2=val2)")
+	cmd.Flags().StringArray("collector", nil, "Collector spec (name:key=val;key2=val2)")
 	cmd.Flags().Bool("dry-run", false, "Run search only, report cluster count")
 	cmd.Flags().Int("cluster-timeout", 120, "Per-cluster timeout in seconds")
 	cmd.Flags().String("output-dir", "./output/", "Output directory for results")
@@ -58,7 +58,7 @@ func newScanCommand() *cobra.Command {
 
 func runScan(cmd *cobra.Command, args []string) error {
 	search, _ := cmd.Flags().GetString("search")
-	collectorRaw, _ := cmd.Flags().GetStringSlice("collector")
+	collectorRaw, _ := cmd.Flags().GetStringArray("collector")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	verbose, _ := cmd.Flags().GetBool("verbose")
 	debug, _ := cmd.Flags().GetBool("debug")

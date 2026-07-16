@@ -22,7 +22,7 @@ Batch tool for scanning a fleet of OpenShift clusters via OCM API. Filters clust
 | **Search filter** | Raw OCM search string via `--search` flag |
 | **Cluster login** | `ocm backplane login` via shell exec, isolated `KUBECONFIG` per cluster |
 | **Cluster interaction** | `client-go` for collectors |
-| **Collectors** | Go interface, `init()` auto-registration, per-collector params via `--collector=name:key=val` |
+| **Collectors** | Go interface, `init()` auto-registration, per-collector params via `--collector=name:key=val;key2=val2` |
 | **Multiple collectors** | Supported, results keyed by collector name |
 | **Concurrency** | Sequential by default (`--concurrency=1`), architected for parallelism with isolated kubeconfigs |
 | **Error handling** | Skip and continue, errors captured per-cluster per-collector |
