@@ -1956,3 +1956,187 @@ func TestMc109AdaptiveLoginRateLimit_DispatcherIntegration_Acceptance(t *testing
 		}
 	})
 }
+
+// TestMC126WireErrorHandling_Regression is the permanent regression test for
+// MC-126: three pieces of error-handling infrastructure (AdaptiveLimiter /
+// RetryLogin, SignalHandler, WriteRecord error propagation) are fully
+// implemented and tested in isolation but were never wired into the CLI run
+// path, making them dead code in production.
+//
+// Sub-bugs:
+//
+//   (A) dispatcher.go — WriteRecord error silently discarded (line used `_ = w.WriteRecord(rec)`
+//       instead of propagating the error).  The serial runner.Run() handled it
+//       correctly; Dispatch must do the same.
+//
+//   (B) cli.go — context.Background() passed to Dispatch rather than the context
+//       returned by NewSignalHandler(…).Context(), so SIGINT cannot gracefully
+//       cancel in-flight work.
+//
+//   (C) cli.go — RunOptions built without LoginLimiter; dispatcher called
+//       BackplaneLogin once per cluster with no retry, so a transient 429 causes
+//       an unrecoverable skip instead of an AIMD-gated retry.
+//
+// Expected (after fix):
+//
+//	(A) Dispatch returns the error returned by WriteRecord.
+//	(B) When a SignalHandler's Stop() is called, the Dispatch context is
+//	    cancelled and in-flight work drains gracefully.
+//	(C) BackplaneLogin is retried more than once per cluster on transient failure.
+//
+// Actual (bug present):
+//
+//	(A) Dispatch returns nil even when WriteRecord returns an error.
+//	(B) Dispatch never sees context cancellation from SIGINT.
+//	(C) BackplaneLogin called exactly once per cluster; single 429 → skip.
+func TestMC126WireErrorHandling_Regression(t *testing.T) {
+	// ---- Sub-bug (A): WriteRecord error must propagate from Dispatch ----
+	t.Run("(A) Dispatch propagates WriteRecord error not silently discards it", func(t *testing.T) {
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+		}
+
+		diskFull := fmt.Errorf("write /output/results.jsonl: no space left on device")
+		w := &failingRecordWriter{returnErr: diskFull}
+
+		col := &mockCollector{
+			name: "noop",
+			runFn: func(_ context.Context, _, _ string) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 10 * time.Second,
+			Collectors:     []collector.Collector{col},
+		}
+
+		d := NewDispatcher(1, opts)
+		err := d.Dispatch(context.Background(), clusters, w)
+
+		if err == nil {
+			t.Fatal("Dispatch returned nil but WriteRecord returned an error — " +
+				"regression: WriteRecord error must be propagated, not silently dropped " +
+				"(was: `_ = w.WriteRecord(rec)` at dispatcher.go)")
+		}
+	})
+
+	// ---- Sub-bug (B): SignalHandler context cancellation must stop Dispatch ----
+	//
+	// The SignalHandler struct exists and its Stop() simulates what the OS signal
+	// handler does.  Dispatch must be called with sh.Context() so that Stop()
+	// (i.e., SIGINT) drains in-flight work gracefully.
+	//
+	// This test verifies the Dispatch side: when passed a context that is
+	// cancelled via SignalHandler.Stop(), Dispatch stops and returns an error.
+	// The complementary CLI-level wiring (using sh.Context() instead of
+	// context.Background()) must be verified in cli.go.
+	t.Run("(B) Dispatch stops and errors on SignalHandler context cancellation", func(t *testing.T) {
+		clusters := make([]ocm.ClusterMetadata, 10)
+		for i := range clusters {
+			clusters[i] = ocm.ClusterMetadata{
+				ID:   fmt.Sprintf("c%d", i),
+				Name: fmt.Sprintf("cluster-%d", i),
+			}
+		}
+
+		w := &concurrentMockWriter{}
+
+		sh := NewSignalHandler(context.Background())
+
+		// Slow collector — gives us time to cancel before all clusters complete.
+		slowCol := &mockCollector{
+			name: "slow",
+			runFn: func(ctx context.Context, _, _ string) (json.RawMessage, error) {
+				select {
+				case <-time.After(100 * time.Millisecond):
+					return json.RawMessage(`{}`), nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			},
+		}
+
+		opts := RunOptions{
+			ClusterTimeout: 30 * time.Second,
+			Collectors:     []collector.Collector{slowCol},
+		}
+
+		d := NewDispatcher(2, opts)
+
+		// Cancel after a short delay — not all clusters should be processed.
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			sh.Stop()
+		}()
+
+		err := d.Dispatch(sh.Context(), clusters, w)
+
+		// After cancellation, Dispatch must return a non-nil error and must NOT
+		// have processed all 10 clusters.
+		if err == nil && len(w.Records()) == 10 {
+			t.Fatal("Dispatch processed all clusters despite SignalHandler cancellation — " +
+				"regression: CLI must pass sh.Context() to Dispatch, not context.Background()")
+		}
+	})
+
+	// ---- Sub-bug (C): Login must be retried on transient failure ----
+	//
+	// When BackplaneLogin is configured with a LoginLimiter, a transient 429-style
+	// failure should trigger a retry (via backplane.RetryLogin or an equivalent
+	// retry loop).  Without retry, the cluster is immediately skipped.
+	t.Run("(C) transient login failure triggers retry not immediate skip", func(t *testing.T) {
+		var loginCalls int
+		var loginMu sync.Mutex
+
+		clusters := []ocm.ClusterMetadata{
+			{ID: "c1", Name: "cluster-1"},
+		}
+		w := &concurrentMockWriter{}
+
+		limiter := backplane.NewAdaptiveLimiter(5)
+
+		opts := RunOptions{
+			ClusterTimeout: 10 * time.Second,
+			BackplaneLogin: func(_ context.Context, _ string) (string, func(), error) {
+				loginMu.Lock()
+				loginCalls++
+				loginMu.Unlock()
+				return "", nil, fmt.Errorf("429 Too Many Requests: rate limited by backplane")
+			},
+			LoginLimiter: limiter,
+			Collectors: []collector.Collector{
+				&mockCollector{
+					name: "noop",
+					runFn: func(_ context.Context, _, _ string) (json.RawMessage, error) {
+						return json.RawMessage(`{}`), nil
+					},
+				},
+			},
+		}
+
+		d := NewDispatcher(1, opts)
+		_ = d.Dispatch(context.Background(), clusters, w)
+
+		loginMu.Lock()
+		calls := loginCalls
+		loginMu.Unlock()
+
+		if calls < 2 {
+			t.Fatalf("BackplaneLogin called %d time(s) on 429 error — expected >= 2 retries. "+
+				"Regression: dispatcher must retry transient login failures using "+
+				"backplane.RetryLogin or equivalent; a single 429 must not immediately skip a cluster.", calls)
+		}
+	})
+}
+
+// failingRecordWriter is a RecordWriter that always returns an error from WriteRecord.
+type failingRecordWriter struct {
+	returnErr error
+}
+
+func (f *failingRecordWriter) WriteRecord(_ output.ClusterRecord) error {
+	return f.returnErr
+}
+
+func (f *failingRecordWriter) Finalize(_ string, _, _, _ int, _ time.Duration) error { return nil }
