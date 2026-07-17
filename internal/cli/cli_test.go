@@ -40,12 +40,34 @@ func TestScanCommandHelp(t *testing.T) {
 		"--output-dir",
 		"--verbose",
 		"--debug",
+		"--ocm-url",
 	}
 
 	for _, flag := range expectedFlags {
 		if !strings.Contains(helpOutput, flag) {
 			t.Errorf("expected help output to contain %q, but it did not.\nHelp output:\n%s", flag, helpOutput)
 		}
+	}
+}
+
+// TestScanCommand_OCMURLFlag_RegisteredWithEmptyDefault verifies that the scan
+// subcommand registers --ocm-url as a string flag with a default value of "".
+// This ensures users can target staging/integration OCM endpoints via the flag.
+func TestScanCommand_OCMURLFlag_RegisteredWithEmptyDefault(t *testing.T) {
+	root := NewRootCommand("test")
+
+	scanCmd := findSubcommand(root, "scan")
+	if scanCmd == nil {
+		t.Fatal("expected root command to have a 'scan' subcommand, but it was not found")
+	}
+
+	flag := scanCmd.Flags().Lookup("ocm-url")
+	if flag == nil {
+		t.Fatal("expected scan command to have --ocm-url flag, but it was not registered")
+	}
+
+	if flag.DefValue != "" {
+		t.Errorf("expected --ocm-url default value to be %q, got %q", "", flag.DefValue)
 	}
 }
 

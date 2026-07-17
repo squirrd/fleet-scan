@@ -52,6 +52,7 @@ func newScanCommand() *cobra.Command {
 	cmd.Flags().Int("concurrency", 1, "Number of clusters to process concurrently")
 	cmd.Flags().Bool("verbose", false, "Enable verbose logging")
 	cmd.Flags().Bool("debug", false, "Enable debug logging")
+	cmd.Flags().String("ocm-url", "", "OCM API base URL (overrides default production endpoint)")
 
 	return cmd
 }
@@ -66,6 +67,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	outputDir, _ := cmd.Flags().GetString("output-dir")
 	clusterTimeoutSec, _ := cmd.Flags().GetInt("cluster-timeout")
 	concurrency, _ := cmd.Flags().GetInt("concurrency")
+	ocmURL, _ := cmd.Flags().GetString("ocm-url")
 
 	if concurrency < 1 {
 		return fmt.Errorf("--concurrency must be at least 1, got %d", concurrency)
@@ -140,7 +142,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	client, err := ocm.NewSDKClient(token, clientID)
+	client, err := ocm.NewSDKClient(token, clientID, ocmURL)
 	if err != nil {
 		return err
 	}
