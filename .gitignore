@@ -21,3 +21,6 @@ output/
 
 # TDD skill state
 .tdd/
+
+# TDD worktrees and issue tracking (local only)
+local/tdd-state/
