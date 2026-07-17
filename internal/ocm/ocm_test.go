@@ -2,6 +2,8 @@ package ocm
 
 import (
 	"testing"
+
+	sdk "github.com/openshift-online/ocm-sdk-go"
 )
 
 // TestMc111SdkClientIdMismatch_Regression verifies that NewSDKClient forwards
@@ -66,5 +68,60 @@ func TestNewSDKClient_EmptyClientID(t *testing.T) {
 	if gotClientID != "cloud-services" {
 		t.Errorf("connection client ID = %q, want %q (SDK default)",
 			gotClientID, "cloud-services")
+	}
+}
+
+// TestNewSDKClient_URLOverride verifies that NewSDKClient forwards a non-empty
+// URL to the SDK connection builder so the client connects to the specified
+// endpoint instead of silently defaulting to the production URL.
+//
+// Bug: MC-127
+// Reproduced: NewSDKClient() never calls builder.URL(), so the OCM SDK always
+// connects to sdk.DefaultURL ("https://api.openshift.com") regardless of any
+// --ocm-url flag or config file value passed by the caller.
+// Expected: When a non-empty URL is provided, NewSDKClient passes it to the
+// connection builder via builder.URL(url), so the OCM client connects to the
+// correct endpoint (e.g. staging, integration, or a custom gateway).
+// Actual: The URL parameter is ignored; the SDK always uses the production
+// default, making it impossible to target non-production clusters.
+//
+// backwards_compatibility: tests public API contract
+func TestNewSDKClient_URLOverride(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantURL string
+	}{
+		{
+			name:    "custom URL is forwarded to connection",
+			url:     "https://api.stage.openshift.com",
+			wantURL: "https://api.stage.openshift.com",
+		},
+		{
+			name:    "empty URL uses SDK production default",
+			url:     "",
+			wantURL: sdk.DefaultURL,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewSDKClient("offline-token-dummy", "", tt.url)
+			if err != nil {
+				t.Fatalf("NewSDKClient() error: %v", err)
+			}
+
+			sc, ok := client.(*sdkClient)
+			if !ok {
+				t.Fatal("NewSDKClient() did not return *sdkClient")
+			}
+
+			gotURL := sc.conn.URL()
+			if gotURL != tt.wantURL {
+				t.Errorf("connection URL = %q, want %q; "+
+					"the OCM client will silently connect to the wrong endpoint",
+					gotURL, tt.wantURL)
+			}
+		})
 	}
 }

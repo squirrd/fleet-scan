@@ -12,11 +12,14 @@ type sdkClient struct {
 	conn *sdk.Connection
 }
 
-func NewSDKClient(token string, clientID string) (OCMClient, error) {
+func NewSDKClient(token string, clientID string, urls ...string) (OCMClient, error) {
 	builder := sdk.NewConnectionBuilder().
 		Tokens(token)
 	if clientID != "" {
 		builder = builder.Client(clientID, "")
+	}
+	if len(urls) > 0 && urls[0] != "" {
+		builder = builder.URL(urls[0])
 	}
 	conn, err := builder.Build()
 	if err != nil {
