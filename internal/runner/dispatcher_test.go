@@ -1563,15 +1563,18 @@ func TestProcessCluster_LoginLimiter_RecordFailureOnFailure(t *testing.T) {
 	d := NewDispatcher(1, opts)
 	_ = d.Dispatch(context.Background(), clusters, w)
 
-	// After a failed login, RecordFailure should have halved the limit.
+	// After all login attempts fail, RecordFailure should have been called once
+	// per attempt. With RetryLogin(maxRetries=3) there are 4 total attempts, so
+	// the AIMD halving is applied 4 times: 8 → 4 → 2 → 1 → 1 (floor 1).
 	limitAfter := limiter.CurrentLimit()
 	if limitAfter >= limitBefore {
 		t.Errorf("limiter limit after failure = %d, should be < %d (RecordFailure not called)",
 			limitAfter, limitBefore)
 	}
-	// AIMD halves: 8 → 4.
-	if limitAfter != limitBefore/2 {
-		t.Errorf("limiter limit after failure = %d, want %d (8/2)", limitAfter, limitBefore/2)
+	// With 4 failed attempts the floor is reached: expect 1.
+	want := 1
+	if limitAfter != want {
+		t.Errorf("limiter limit after failure = %d, want %d (4 halvings of 8)", limitAfter, want)
 	}
 }
 

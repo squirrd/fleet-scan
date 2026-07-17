@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/squirrd/fleet-scan/internal/backplane"
 	"github.com/squirrd/fleet-scan/internal/ocm"
 	"github.com/squirrd/fleet-scan/internal/output"
 )
@@ -45,6 +46,8 @@ func (d *Dispatcher) Skipped() int { return int(d.skipped.Load()) }
 // Dispatch processes all clusters concurrently (up to d.concurrency at a time),
 // writing a ClusterRecord for each one via w. It respects context cancellation:
 // in-flight workers finish, but no new clusters are dispatched.
+// It returns the first non-nil error from any processCluster call (e.g. a
+// WriteRecord failure) or the context error if the context was cancelled.
 func (d *Dispatcher) Dispatch(ctx context.Context, clusters []ocm.ClusterMetadata, w RecordWriter) error {
 	if len(clusters) == 0 {
 		return nil
@@ -52,6 +55,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, clusters []ocm.ClusterMetadat
 
 	sem := make(chan struct{}, d.concurrency)
 	var wg sync.WaitGroup
+
+	// Buffered so goroutines never block writing their error.
+	errCh := make(chan error, len(clusters))
 
 	total := len(clusters)
 
@@ -76,22 +82,33 @@ func (d *Dispatcher) Dispatch(ctx context.Context, clusters []ocm.ClusterMetadat
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			d.processCluster(ctx, idx, total, cl, w)
+			if err := d.processCluster(ctx, idx, total, cl, w); err != nil {
+				errCh <- err
+			}
 		}(i, cluster)
 	}
 
 done:
 	wg.Wait()
+	close(errCh)
 
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+
+	// Return the first error reported by any worker (e.g. WriteRecord failure).
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 // processCluster handles a single cluster: applies per-cluster timeout,
 // runs backplane login if configured, runs collectors, and writes the record.
-func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster ocm.ClusterMetadata, w RecordWriter) {
+// It returns any error from writing the cluster record (e.g. disk full).
+func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster ocm.ClusterMetadata, w RecordWriter) error {
 	start := time.Now()
 
 	// Per-cluster timeout.
@@ -108,35 +125,18 @@ func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster
 	var kubeconfigPath string
 	loginFailed := false
 	if d.opts.BackplaneLogin != nil {
-		// Acquire login limiter slot if configured.
 		if d.opts.LoginLimiter != nil {
-			if err := d.opts.LoginLimiter.Acquire(clusterCtx); err != nil {
-				// Context cancelled while waiting for limiter slot.
-				loginFailed = true
-				for _, c := range d.opts.Collectors {
-					rec.ClusterResult[c.Name()] = output.CollectorResult{
-						Status: "skipped",
-						Error:  err.Error(),
-					}
-				}
-			}
-		}
-
-		if !loginFailed {
-			kp, cleanup, loginErr := d.opts.BackplaneLogin(clusterCtx, cluster.ID)
+			// When a LoginLimiter is configured, delegate to RetryLogin which
+			// handles acquire/release, RecordSuccess/RecordFailure, and jittered
+			// exponential backoff between attempts automatically.
+			kp, cleanup, loginErr := backplane.RetryLogin(
+				clusterCtx, cluster.ID,
+				backplane.LoginFunc(d.opts.BackplaneLogin),
+				d.opts.LoginLimiter, 3,
+			)
 			clusterCleanup = cleanup
-
-			// Release limiter slot after login completes.
-			if d.opts.LoginLimiter != nil {
-				d.opts.LoginLimiter.Release()
-			}
-
 			if loginErr != nil {
 				loginFailed = true
-				// Record login failure in the limiter.
-				if d.opts.LoginLimiter != nil {
-					d.opts.LoginLimiter.RecordFailure()
-				}
 				for _, c := range d.opts.Collectors {
 					rec.ClusterResult[c.Name()] = output.CollectorResult{
 						Status: "skipped",
@@ -145,10 +145,21 @@ func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster
 				}
 			} else {
 				kubeconfigPath = kp
-				// Record login success in the limiter.
-				if d.opts.LoginLimiter != nil {
-					d.opts.LoginLimiter.RecordSuccess()
+			}
+		} else {
+			// No limiter — call login directly (no retry).
+			kp, cleanup, loginErr := d.opts.BackplaneLogin(clusterCtx, cluster.ID)
+			clusterCleanup = cleanup
+			if loginErr != nil {
+				loginFailed = true
+				for _, c := range d.opts.Collectors {
+					rec.ClusterResult[c.Name()] = output.CollectorResult{
+						Status: "skipped",
+						Error:  loginErr.Error(),
+					}
 				}
+			} else {
+				kubeconfigPath = kp
 			}
 		}
 	}
@@ -188,7 +199,8 @@ func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster
 	}
 
 	// Write record (RecordWriter implementations must be concurrent-safe).
-	_ = w.WriteRecord(rec)
+	// Propagate any write error (e.g. disk full) back to Dispatch.
+	writeErr := w.WriteRecord(rec)
 
 	// Print after-line with outcome and timing.
 	elapsed := time.Since(start)
@@ -201,6 +213,8 @@ func (d *Dispatcher) processCluster(ctx context.Context, idx, total int, cluster
 	if clusterCleanup != nil {
 		clusterCleanup()
 	}
+
+	return writeErr
 }
 
 // SignalHandler manages OS signal handling for graceful shutdown.
