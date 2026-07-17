@@ -71,6 +71,33 @@ func TestNewSDKClient_EmptyClientID(t *testing.T) {
 	}
 }
 
+// TestMC127OcmUrlFlag_Regression is the named regression test for bug MC-127.
+// It verifies that NewSDKClient accepts a URL parameter and forwards it to the
+// OCM SDK connection builder, so that --ocm-url flag values reach the endpoint.
+//
+// Without the fix, builder.URL() was never called and the SDK silently defaulted
+// to the production endpoint, making staging/integration clusters unreachable.
+func TestMC127OcmUrlFlag_Regression(t *testing.T) {
+	stagingURL := "https://api.stage.openshift.com"
+
+	client, err := NewSDKClient("offline-token-dummy", "", stagingURL)
+	if err != nil {
+		t.Fatalf("NewSDKClient() error: %v", err)
+	}
+
+	sc, ok := client.(*sdkClient)
+	if !ok {
+		t.Fatal("NewSDKClient() did not return *sdkClient")
+	}
+
+	gotURL := sc.conn.URL()
+	if gotURL != stagingURL {
+		t.Errorf("NewSDKClient URL = %q, want %q; "+
+			"MC-127 regression: --ocm-url flag value is not forwarded to the SDK connection builder",
+			gotURL, stagingURL)
+	}
+}
+
 // TestNewSDKClient_URLOverride verifies that NewSDKClient forwards a non-empty
 // URL to the SDK connection builder so the client connects to the specified
 // endpoint instead of silently defaulting to the production URL.
