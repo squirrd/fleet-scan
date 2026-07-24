@@ -1,7 +1,10 @@
-.PHONY: build test test-integration lint clean
+.PHONY: build deploy test test-integration lint clean
+
+BINARY := bin/fleet-scan
+INSTALL := $(HOME)/bin/fleet-scan
 
 build:
-	go build -o bin/fleet-scan ./cmd/fleet-scan
+	go build -o $(BINARY) ./cmd/fleet-scan
 
 test:
 	go test ./...
@@ -14,3 +17,13 @@ lint:
 
 clean:
 	rm -rf bin/
+
+deploy: build
+	mkdir -p $(HOME)/bin
+	ln -sf $(CURDIR)/$(BINARY) $(INSTALL)
+	@echo ""
+	@echo "# Built version"
+	$(BINARY) version
+	@echo ""
+	@echo "# Locally available version"
+	fleet-scan version

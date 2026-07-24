@@ -10,27 +10,50 @@ A CLI tool for batch-scanning fleets of OpenShift clusters via the OCM API. Filt
 - `OCM_TOKEN` environment variable set, or a valid token in `~/.config/ocm/ocm.json`
 
 ## Build
+To make the fleet-scan CLI available locally, clone this repo locally.
+```bash
+$ cd <location-for-fleetscan-repo>
+$ git clone git@github.com:squirrd/fleet-scan.git
+$ cd fleet-scan
+```
+Then build and deploy
 
 ```bash
-make build          # produces bin/fleet-scan
-# or
+$ make deploy
+go build -o bin/fleet-scan ./cmd/fleet-scan
+mkdir -p ~/bin
+ln -sf ~/Repos/fleet-scan/bin/fleet-scan ~/bin/fleet-scan
+
+# Built version
+bin/fleet-scan version
+fleet-scan 0.1.5
+
+# Locally available version
+fleet-scan version
+fleet-scan 0.1.5
+```
+
+OR
+```bash
+$ make build
 go build -o bin/fleet-scan ./cmd/fleet-scan
 ```
+Then add the executable to your PATH environment variable or move `bin/fleet-scan` to a suitable executable location
 
 ## Usage
 
 ```bash
 # Scan all managed clusters, collecting namespace info with concurrency of 5
-fleet-scan scan \
+$ fleet-scan scan \
   --search "managed='true'" \
   --collector "managed-namespaces:patterns=openshift-*,kinds=Pods,Deployments" \
   --concurrency 5
 
 # Dry run — just count matching clusters
-fleet-scan scan --search "managed='true'" --dry-run
+$ fleet-scan scan --search "managed='true'" --dry-run
 
 # Resume an interrupted run
-fleet-scan scan --resume output/2024-06-15T143000/
+$ fleet-scan scan --resume output/2024-06-15T143000/
 ```
 
 ### Flags
@@ -84,7 +107,7 @@ Enumerates resources in managed namespaces across a cluster.
 **Example:**
 
 ```bash
-fleet-scan scan \
+$ fleet-scan scan \
   --search "managed='true'" \
   --collector "managed-namespaces:patterns=openshift-*,kinds=Pods,Deployments"
 ```
