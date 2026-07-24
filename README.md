@@ -46,7 +46,7 @@ Then add the executable to your PATH environment variable or move `bin/fleet-sca
 # Scan all managed clusters, collecting namespace info with concurrency of 5
 $ fleet-scan scan \
   --search "managed='true'" \
-  --collector "managed-namespaces:patterns=openshift-*,kinds=Pods,Deployments" \
+  --collector "managed-namespaces:patterns=openshift-*;kinds=Pods,Deployments" \
   --concurrency 5
 
 # Dry run — just count matching clusters
@@ -109,5 +109,25 @@ Enumerates resources in managed namespaces across a cluster.
 ```bash
 $ fleet-scan scan \
   --search "managed='true'" \
-  --collector "managed-namespaces:patterns=openshift-*,kinds=Pods,Deployments"
+  --collector "managed-namespaces:patterns=openshift-*;kinds=Pods,Deployments"
+```
+
+### ns-attribution
+
+Extracts focused per-resource metadata from managed namespaces — ownership, labels, annotations, and selected fields — as a flat list.
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `patterns` | `openshift-*,kube-system,kube-public,default,redhat-*` | Comma-separated namespace patterns to match |
+| `kinds` | `Pods,Deployments,StatefulSets,DaemonSets,Jobs,CronJobs,Services,ConfigMaps,Secrets,NetworkPolicies,Routes,ServiceAccounts,Roles,RoleBindings` | Comma-separated resource kinds to enumerate |
+| `fields` | `namespace,name,kind,apiVersion,creationTimestamp,ownerReferences,labels,annotations,managedFields` | Comma-separated metadata fields to extract per resource |
+
+**Example:**
+
+```bash
+$ fleet-scan scan \
+  --search "managed='true'" \
+  --collector "ns-attribution:patterns=openshift-*;kinds=Deployments,Pods;fields=namespace,name,labels,ownerReferences"
 ```

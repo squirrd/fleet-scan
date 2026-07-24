@@ -34,10 +34,10 @@ make lint
 - Entry: `cmd/fleet-scan/main.go` — blank-imports collector packages to trigger `init()` registration
 
 ### Core Packages (`internal/`)
-- **cli/** — Cobra command tree. `root.go` (root cmd), `scan.go` (scan subcommand + signal handling), `flags.go` (flag types, `ParseCollectorSpecs()` for `name:key=val;key2=val2` syntax)
-- **ocm/** — OCM SDK integration. `auth.go` (token from `OCM_TOKEN` env → `~/.config/ocm/ocm.json` fallback), `clusters.go` (paginated listing, page size 100), `types.go` (`ClusterMetadata` with 12 hardcoded fields)
-- **backplane/** — `login.go`: shell-execs `ocm backplane login`, returns `(kubeconfigPath, cleanup, error)` with isolated temp kubeconfig per cluster
-- **collector/** — `registry.go`: `Collector` interface + `Register(name, factory)` pattern. Collectors auto-register via `init()`. Each collector gets `(ctx, clusterID, kubeconfigPath)` and returns `json.RawMessage`
+- **cli/** — Cobra command tree. `cli.go` (root + scan commands, signal handling, slog config), `flags.go` (flag types, `ParseCollectorSpecs()` for `name:key=val;key2=val2` syntax)
+- **ocm/** — OCM SDK integration. `auth.go` (token from `OCM_TOKEN` env → `~/.config/ocm/ocm.json` fallback), `clusters.go` (paginated listing, page size 100), `types.go` (`ClusterMetadata` with 12 hardcoded fields), `ocm.go` (SDK connection builder)
+- **backplane/** — `login.go`: shell-execs `ocm backplane login`, returns `(kubeconfigPath, cleanup, error)` with isolated kubeconfig per cluster. `adaptive_limiter.go` (adaptive rate limiting for concurrent logins), `retry.go` (retry with backoff on transient failures)
+- **collector/** — `collector.go` + `registry.go`: `Collector` interface + `Register(name, factory)` pattern. Collectors auto-register via `init()`. Each collector gets `(ctx, clusterID, kubeconfigPath)` and returns `json.RawMessage`. Implementations: `managed_namespaces.go` (resource enumeration), `ns_attribution.go` (per-resource metadata extraction)
 - **runner/** — `runner.go` (per-cluster orchestration: login → run collectors → write record), `dispatcher.go` (semaphore concurrency, graceful SIGINT)
 - **output/** — `writer.go` (JSONL + `meta.json`, flush-per-line), `resume.go` (loads completed cluster IDs from existing JSONL), `types.go` (record/meta structs)
 
@@ -103,7 +103,7 @@ Guarded by `//go:build integration` build tag. Require real OCM credentials and 
 
 ## Implementation Phases
 
-The project is built incrementally in 7 phases (see `docs/design/implementation-plan.md`):
+All 7 phases are complete. Phases and their scope (see `docs/design/implementation-plan.md`):
 1. **Skeleton** — module, CLI, OCM auth, cluster listing, `--dry-run`
 2. **Output layer** — JSONL writer, meta.json, run dirs, resume, iteration loop (stub results)
 3. **Backplane login** — isolated kubeconfig per cluster
