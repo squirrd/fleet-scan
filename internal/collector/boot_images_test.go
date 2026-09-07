@@ -327,4 +327,19 @@ func TestBootImages_KubeClientWiring_Acceptance(t *testing.T) {
 			t.Error("default collector should have a non-nil clientBuilder")
 		}
 	})
+
+	t.Run("machineConfigurationGVR uses correct operator.openshift.io group", func(t *testing.T) {
+		if machineConfigurationGVR.Group != "operator.openshift.io" {
+			t.Errorf("machineConfigurationGVR.Group = %q, want %q",
+				machineConfigurationGVR.Group, "operator.openshift.io")
+		}
+		if machineConfigurationGVR.Version != "v1" {
+			t.Errorf("machineConfigurationGVR.Version = %q, want %q",
+				machineConfigurationGVR.Version, "v1")
+		}
+		if machineConfigurationGVR.Resource != "machineconfigurations" {
+			t.Errorf("machineConfigurationGVR.Resource = %q, want %q",
+				machineConfigurationGVR.Resource, "machineconfigurations")
+		}
+	})
 }

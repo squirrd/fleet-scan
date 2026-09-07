@@ -18,7 +18,7 @@ var (
 		Resource: "clusterversions",
 	}
 	machineConfigurationGVR = schema.GroupVersionResource{
-		Group:    "machine.openshift.io",
+		Group:    "operator.openshift.io",
 		Version:  "v1",
 		Resource: "machineconfigurations",
 	}
