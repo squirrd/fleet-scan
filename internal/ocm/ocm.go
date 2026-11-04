@@ -73,6 +73,7 @@ func (c *sdkClient) ListClusters(ctx context.Context, search string, page, size 
 		if ccs := cluster.CCS(); ccs != nil {
 			m.CCSEnabled = ccs.Enabled()
 		}
+		m.ZeroEgress = cluster.Properties()["zero_egress"] == "true"
 		clusters = append(clusters, m)
 		return true
 	})

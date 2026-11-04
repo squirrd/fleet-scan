@@ -20,4 +20,5 @@ type ClusterMetadata struct {
 	StatusDescription         string    `json:"status_description"`
 	HypershiftEnabled         bool      `json:"hypershift_enabled"`
 	CCSEnabled                bool      `json:"ccs_enabled"`
+	ZeroEgress                bool      `json:"zero_egress"`
 }

@@ -64,6 +64,9 @@ func ExtractClusterMetadata(raw map[string]interface{}) (*ClusterMetadata, error
 	if nested, ok := raw["ccs"].(map[string]interface{}); ok {
 		m.CCSEnabled = getBool(nested, "enabled")
 	}
+	if nested, ok := raw["properties"].(map[string]interface{}); ok {
+		m.ZeroEgress = getString(nested, "zero_egress") == "true"
+	}
 
 	if ts, ok := raw["creation_timestamp"].(string); ok {
 		parsed, err := time.Parse(time.RFC3339, ts)

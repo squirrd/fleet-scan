@@ -98,6 +98,7 @@ func TestClusterMetadata_Fields(t *testing.T) {
 		},
 		"hypershift": map[string]interface{}{"enabled": true},
 		"ccs":        map[string]interface{}{"enabled": true},
+		"properties": map[string]interface{}{"zero_egress": "true"},
 	}
 
 	meta, err := ExtractClusterMetadata(rawCluster)
@@ -158,8 +159,11 @@ func TestClusterMetadata_Fields(t *testing.T) {
 	if !meta.CCSEnabled {
 		t.Error("CCSEnabled should be true")
 	}
+	if !meta.ZeroEgress {
+		t.Error("ZeroEgress should be true")
+	}
 
-	// Verify JSON serialization produces exactly 16 keys.
+	// Verify JSON serialization produces exactly 17 keys.
 	data, err := json.Marshal(meta)
 	if err != nil {
 		t.Fatalf("failed to marshal ClusterMetadata: %v", err)
@@ -175,7 +179,7 @@ func TestClusterMetadata_Fields(t *testing.T) {
 		"region", "state", "health_state", "openshift_version",
 		"multi_az", "managed", "creation_timestamp",
 		"limited_support_reason_count", "status_description",
-		"hypershift_enabled", "ccs_enabled",
+		"hypershift_enabled", "ccs_enabled", "zero_egress",
 	}
 
 	for _, key := range expectedKeys {
@@ -184,8 +188,8 @@ func TestClusterMetadata_Fields(t *testing.T) {
 		}
 	}
 
-	if len(raw) != 16 {
-		t.Errorf("expected 16 JSON keys, got %d: %v", len(raw), keysOf(raw))
+	if len(raw) != 17 {
+		t.Errorf("expected 17 JSON keys, got %d: %v", len(raw), keysOf(raw))
 	}
 }
 
