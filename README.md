@@ -131,3 +131,50 @@ $ fleet-scan scan \
   --search "managed='true'" \
   --collector "ns-attribution:patterns=openshift-*;kinds=Deployments,Pods;fields=namespace,name,labels,ownerReferences"
 ```
+
+### boot-images
+
+Collects per-MachineSet AMI inventory from AWS clusters to enable fleet-wide boot image risk tiering. See `docs/collectors/boot-images.md`.
+
+**Parameters:** None.
+
+**Example:**
+
+```bash
+$ fleet-scan scan \
+  --search "managed='true' AND cloud_provider.id='aws'" \
+  --collector boot-images
+```
+
+### machine-audit
+
+Collects the raw objects needed to assess CPMS (ControlPlaneMachineSet) presence and boot-image drift on masters (ClusterVersion, Infrastructure, ControlPlaneMachineSet, MachineConfiguration, MachineSets, the `coreos-bootimages` ConfigMap, and master Nodes), without pre-computing a verdict. See `docs/collectors/machine-audit.md`.
+
+**Parameters:** None.
+
+**Example:**
+
+```bash
+$ fleet-scan scan \
+  --search "managed='true' AND (cloud_provider.id='aws' OR cloud_provider.id='gcp') AND hypershift.enabled='false'" \
+  --collector machine-audit
+```
+
+### cco-tight-loop
+
+Detects OCPBUGS-132683 — the GCP Cloud Credential Operator tight reconcile loop on clusters running `credentialsMode: Manual` with Workload Identity Federation enabled. Read-only, no elevated access required.
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `window` | `30m` | Go duration string — how far back to inspect CCO logs |
+| `threshold` | `5` | Minimum resyncs-per-CredentialsRequest within the window to flag a loop |
+
+**Example:**
+
+```bash
+$ fleet-scan scan \
+  --search "managed='true' AND cloud_provider.id='gcp'" \
+  --collector "cco-tight-loop:window=1h;threshold=10"
+```
