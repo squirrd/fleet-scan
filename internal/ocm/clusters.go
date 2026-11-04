@@ -54,6 +54,16 @@ func ExtractClusterMetadata(raw map[string]interface{}) (*ClusterMetadata, error
 	if nested, ok := raw["region"].(map[string]interface{}); ok {
 		m.Region = getString(nested, "id")
 	}
+	if nested, ok := raw["status"].(map[string]interface{}); ok {
+		m.LimitedSupportReasonCount = getInt(nested, "limited_support_reason_count")
+		m.StatusDescription = getString(nested, "description")
+	}
+	if nested, ok := raw["hypershift"].(map[string]interface{}); ok {
+		m.HypershiftEnabled = getBool(nested, "enabled")
+	}
+	if nested, ok := raw["ccs"].(map[string]interface{}); ok {
+		m.CCSEnabled = getBool(nested, "enabled")
+	}
 
 	if ts, ok := raw["creation_timestamp"].(string); ok {
 		parsed, err := time.Parse(time.RFC3339, ts)
@@ -86,4 +96,11 @@ func getBool(m map[string]interface{}, key string) bool {
 		return v
 	}
 	return false
+}
+
+func getInt(m map[string]interface{}, key string) int {
+	if v, ok := m[key].(float64); ok {
+		return int(v)
+	}
+	return 0
 }

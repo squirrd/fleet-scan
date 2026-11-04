@@ -42,13 +42,13 @@ func (c *sdkClient) ListClusters(ctx context.Context, search string, page, size 
 	var clusters []ClusterMetadata
 	resp.Items().Each(func(cluster *cmv1.Cluster) bool {
 		m := ClusterMetadata{
-			ID:               cluster.ID(),
-			Name:             cluster.Name(),
-			ExternalID:       cluster.ExternalID(),
-			State:            string(cluster.State()),
-			OpenshiftVersion: cluster.OpenshiftVersion(),
-			MultiAZ:          cluster.MultiAZ(),
-			Managed:          cluster.Managed(),
+			ID:                cluster.ID(),
+			Name:              cluster.Name(),
+			ExternalID:        cluster.ExternalID(),
+			State:             string(cluster.State()),
+			OpenshiftVersion:  cluster.OpenshiftVersion(),
+			MultiAZ:           cluster.MultiAZ(),
+			Managed:           cluster.Managed(),
 			CreationTimestamp: cluster.CreationTimestamp(),
 		}
 		if cluster.Product() != nil {
@@ -62,6 +62,16 @@ func (c *sdkClient) ListClusters(ctx context.Context, search string, page, size 
 		}
 		if hs, ok := cluster.GetHealthState(); ok {
 			m.HealthState = string(hs)
+		}
+		if status := cluster.Status(); status != nil {
+			m.LimitedSupportReasonCount = status.LimitedSupportReasonCount()
+			m.StatusDescription = status.Description()
+		}
+		if hypershift := cluster.Hypershift(); hypershift != nil {
+			m.HypershiftEnabled = hypershift.Enabled()
+		}
+		if ccs := cluster.CCS(); ccs != nil {
+			m.CCSEnabled = ccs.Enabled()
 		}
 		clusters = append(clusters, m)
 		return true

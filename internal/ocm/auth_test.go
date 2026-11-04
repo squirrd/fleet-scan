@@ -14,8 +14,8 @@ import (
 func TestTokenResolution(t *testing.T) {
 	tests := []struct {
 		name        string
-		envToken    string   // value for OCM_TOKEN (empty string = unset)
-		configJSON  string   // content for fake ocm.json (empty = no file)
+		envToken    string // value for OCM_TOKEN (empty string = unset)
+		configJSON  string // content for fake ocm.json (empty = no file)
 		wantToken   string
 		wantErr     bool
 		errContains string
@@ -172,7 +172,7 @@ func TestResolveTokenMultiDirFallback(t *testing.T) {
 	os.Unsetenv("OCM_TOKEN")
 
 	tests := []struct {
-		name      string
+		name string
 		// setupDirs returns config directories; each entry is (dirPath, configJSON).
 		// If configJSON is empty, no file is created in that dir.
 		setupDirs func(t *testing.T) []string

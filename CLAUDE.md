@@ -35,7 +35,7 @@ make lint
 
 ### Core Packages (`internal/`)
 - **cli/** — Cobra command tree. `cli.go` (root + scan commands, signal handling, slog config), `flags.go` (flag types, `ParseCollectorSpecs()` for `name:key=val;key2=val2` syntax)
-- **ocm/** — OCM SDK integration. `auth.go` (token from `OCM_TOKEN` env → `~/.config/ocm/ocm.json` fallback), `clusters.go` (paginated listing, page size 100), `types.go` (`ClusterMetadata` with 12 hardcoded fields), `ocm.go` (SDK connection builder)
+- **ocm/** — OCM SDK integration. `auth.go` (token from `OCM_TOKEN` env → `~/.config/ocm/ocm.json` fallback), `clusters.go` (paginated listing, page size 100), `types.go` (`ClusterMetadata` with 16 hardcoded fields), `ocm.go` (SDK connection builder)
 - **backplane/** — `login.go`: shell-execs `ocm backplane login`, returns `(kubeconfigPath, cleanup, error)` with isolated kubeconfig per cluster. `adaptive_limiter.go` (adaptive rate limiting for concurrent logins), `retry.go` (retry with backoff on transient failures)
 - **collector/** — `collector.go` + `registry.go`: `Collector` interface + `Register(name, factory)` pattern. Collectors auto-register via `init()`. Each collector gets `(ctx, clusterID, kubeconfigPath)` and returns `json.RawMessage`. Implementations: `managed_namespaces.go` (resource enumeration), `ns_attribution.go` (per-resource metadata extraction), `boot_images.go` (worker/infra MachineSet AMI inventory), `machine_audit.go` (CPMS/boot-image drift raw object collection), `cco_tight_loop.go` (OCPBUGS-132683 GCP CCO reconcile-loop detection)
 - **runner/** — `runner.go` (per-cluster orchestration: login → run collectors → write record), `dispatcher.go` (semaphore concurrency, graceful SIGINT)

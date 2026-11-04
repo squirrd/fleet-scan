@@ -80,18 +80,24 @@ func TestListClusters_Pagination(t *testing.T) {
 func TestClusterMetadata_Fields(t *testing.T) {
 	// Simulate raw cluster data as it would come from the OCM API response.
 	rawCluster := map[string]interface{}{
-		"id":                "1q2w3e4r5t",
-		"name":              "my-prod-cluster",
-		"external_id":       "abc-123-def",
-		"product":           map[string]interface{}{"id": "rosa"},
-		"cloud_provider":    map[string]interface{}{"id": "aws"},
-		"region":            map[string]interface{}{"id": "us-east-1"},
-		"state":             "ready",
-		"health_state":      "healthy",
-		"openshift_version": "4.16.3",
-		"multi_az":          true,
-		"managed":           true,
+		"id":                 "1q2w3e4r5t",
+		"name":               "my-prod-cluster",
+		"external_id":        "abc-123-def",
+		"product":            map[string]interface{}{"id": "rosa"},
+		"cloud_provider":     map[string]interface{}{"id": "aws"},
+		"region":             map[string]interface{}{"id": "us-east-1"},
+		"state":              "ready",
+		"health_state":       "healthy",
+		"openshift_version":  "4.16.3",
+		"multi_az":           true,
+		"managed":            true,
 		"creation_timestamp": "2025-01-15T10:30:00Z",
+		"status": map[string]interface{}{
+			"limited_support_reason_count": float64(2),
+			"description":                  "cluster is in limited support",
+		},
+		"hypershift": map[string]interface{}{"enabled": true},
+		"ccs":        map[string]interface{}{"enabled": true},
 	}
 
 	meta, err := ExtractClusterMetadata(rawCluster)
@@ -140,8 +146,20 @@ func TestClusterMetadata_Fields(t *testing.T) {
 	if !meta.CreationTimestamp.Equal(expectedTS) {
 		t.Errorf("CreationTimestamp = %v, want %v", meta.CreationTimestamp, expectedTS)
 	}
+	if meta.LimitedSupportReasonCount != 2 {
+		t.Errorf("LimitedSupportReasonCount = %d, want 2", meta.LimitedSupportReasonCount)
+	}
+	if meta.StatusDescription != "cluster is in limited support" {
+		t.Errorf("StatusDescription = %q, want %q", meta.StatusDescription, "cluster is in limited support")
+	}
+	if !meta.HypershiftEnabled {
+		t.Error("HypershiftEnabled should be true")
+	}
+	if !meta.CCSEnabled {
+		t.Error("CCSEnabled should be true")
+	}
 
-	// Verify JSON serialization produces exactly 12 keys.
+	// Verify JSON serialization produces exactly 16 keys.
 	data, err := json.Marshal(meta)
 	if err != nil {
 		t.Fatalf("failed to marshal ClusterMetadata: %v", err)
@@ -156,6 +174,8 @@ func TestClusterMetadata_Fields(t *testing.T) {
 		"id", "name", "external_id", "product", "cloud_provider",
 		"region", "state", "health_state", "openshift_version",
 		"multi_az", "managed", "creation_timestamp",
+		"limited_support_reason_count", "status_description",
+		"hypershift_enabled", "ccs_enabled",
 	}
 
 	for _, key := range expectedKeys {
@@ -164,8 +184,8 @@ func TestClusterMetadata_Fields(t *testing.T) {
 		}
 	}
 
-	if len(raw) != 12 {
-		t.Errorf("expected 12 JSON keys, got %d: %v", len(raw), keysOf(raw))
+	if len(raw) != 16 {
+		t.Errorf("expected 16 JSON keys, got %d: %v", len(raw), keysOf(raw))
 	}
 }
 
