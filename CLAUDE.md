@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `fleet-scan` is a Go CLI tool that scans a fleet of OpenShift clusters via the OCM API. It filters clusters by search criteria, logs into each via backplane, runs pluggable collectors, and outputs structured JSONL results. Design doc: `docs/design/design.md`. Implementation plan: `docs/design/implementation-plan.md`.
 
+## Repository Strategy
+
+GitHub is the canonical repo — all development, issues, PRs, and CI happen here. GitLab (Red Hat internal) hosts a **one-directional, read-only mirror** of `main`, kept in sync via automation, for internal discoverability only. GitLab is never a place to accept contributions: MRs/issues opened there get redirected back to GitHub rather than merged. See `docs/design/repo-strategy.md` for the full rationale and mirror setup.
+
 ## Build & Test Commands
 
 ```bash
