@@ -2,6 +2,8 @@
 
 A CLI tool for batch-scanning fleets of OpenShift clusters via the OCM API. Filters clusters by search criteria, logs into each via backplane, runs pluggable collectors, and outputs structured JSONL results.
 
+> Development happens on [GitHub](https://github.com/squirrd/fleet-scan). This project is also mirrored read-only to GitLab for Red Hat internal visibility — please open issues and PRs on GitHub.
+
 ## Prerequisites
 
 - Go 1.25+

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Strategy
 
-GitHub is the canonical repo — all development, issues, PRs, and CI happen here. GitLab (Red Hat internal) hosts a **one-directional, read-only mirror** of `main`, kept in sync via automation, for internal discoverability only. GitLab is never a place to accept contributions: MRs/issues opened there get redirected back to GitHub rather than merged. See `docs/design/repo-strategy.md` for the full rationale and mirror setup.
+GitHub (`squirrd/fleet-scan`) is the canonical repo — all development, issues, PRs, and CI happen here. GitLab (`dsquirre/fleet-scan` on `gitlab.cee.redhat.com`, internal-only) hosts a **one-directional, read-only mirror** of `main`, pushed manually (`git push gitlab main --tags`) since GitHub-hosted runners can't reach the internal GitLab host. GitLab has merge requests/issues disabled — it's never a place to accept contributions. See `docs/design/repo-strategy.md` for full details.
 
 ## Build & Test Commands
 

@@ -18,15 +18,27 @@
 
 ## How contributions on GitLab are handled
 
-GitLab merge requests/issues are not accepted. If someone opens one:
-- Close it with a comment pointing to the GitHub repo.
-- Do not merge or triage it in GitLab.
-- GitLab's README notes it is a mirror and links to GitHub.
+GitLab merge requests/issues are disabled at the project level
+(`merge_requests_access_level` / `issues_access_level` = `disabled`), so
+contributions can't be opened there in the first place. The shared README
+notes that development happens on GitHub.
+
+## Repo location
+
+- GitHub: `squirrd/fleet-scan` (canonical)
+- GitLab: `dsquirre/fleet-scan` on `gitlab.cee.redhat.com`
+  (`ocm-resources` was already taken by an unrelated existing project)
 
 ## Mirror mechanics
 
-- Sync trigger: push/merge to `main` on GitHub (and tag pushes for releases).
-- Implementation: GitHub Action pushes `main` + tags to the GitLab remote
-  (`git push --force-with-lease gitlab-mirror main --tags`).
-- GitLab repo has merge requests disabled/restricted to prevent accidental
-  contribution drift.
+- `gitlab.cee.redhat.com` is Red Hat-internal only (no public DNS resolution),
+  so GitHub-hosted Actions runners cannot reach it — mirroring cannot be
+  automated via GitHub Actions without a self-hosted runner on the Red Hat
+  network.
+- For now, mirroring is **manual**: after a stable point on `main`, push to
+  the `gitlab` remote:
+  ```
+  git push gitlab main --tags
+  ```
+- Revisit automation (e.g. a self-hosted runner) if manual pushes become a
+  bottleneck.
