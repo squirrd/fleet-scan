@@ -2,7 +2,19 @@
 
 A CLI tool for batch-scanning fleets of OpenShift clusters via the OCM API. Filters clusters by search criteria, logs into each via backplane, runs pluggable collectors, and outputs structured JSONL results.
 
-> Development happens on [GitHub](https://github.com/squirrd/fleet-scan). This project is also mirrored read-only to GitLab for Red Hat internal visibility — please open issues and PRs on GitHub.
+New to fleet-scan? See the [tutorial](docs/usage/tutorial.md) for a complete walkthrough.
+
+> Open issues and PRs on [GitHub](https://github.com/squirrd/fleet-scan).
+
+## How it works
+
+A search query selects a fleet of clusters; fleet-scan logs into each one and runs the same set of collectors against it, converging everything into one results file:
+
+![fleet-scan scans a search-selected fleet of clusters and writes combined results](docs/images/how-it-works-overview.jpg)
+
+Each cluster goes through the same steps: backplane login, then whichever collectors you've selected plug in and run, producing a results line plus a run summary:
+
+![backplane login followed by pluggable collectors producing results and a summary](docs/images/how-it-works-cluster-detail.jpg)
 
 ## Prerequisites
 
@@ -42,6 +54,8 @@ go build -o bin/fleet-scan ./cmd/fleet-scan
 Then add the executable to your PATH environment variable or move `bin/fleet-scan` to a suitable executable location
 
 ## Usage
+
+> New to fleet-scan? [`docs/usage/tutorial.md`](docs/usage/tutorial.md) walks through a complete first scan — checking prerequisites, picking a small cluster list, running a real scan, and querying the output.
 
 Log in to OCM before running a scan:
 
