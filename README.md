@@ -9,7 +9,6 @@ A CLI tool for batch-scanning fleets of OpenShift clusters via the OCM API. Filt
 - Go 1.25+
 - [OCM CLI](https://github.com/openshift-online/ocm-cli) installed and configured
 - [Backplane CLI](https://github.com/openshift/backplane-cli) installed
-- `OCM_TOKEN` environment variable set, or a valid token in `~/.config/ocm/ocm.json`
 
 ## Build
 To make the fleet-scan CLI available locally, clone this repo locally.
@@ -43,6 +42,12 @@ go build -o bin/fleet-scan ./cmd/fleet-scan
 Then add the executable to your PATH environment variable or move `bin/fleet-scan` to a suitable executable location
 
 ## Usage
+
+Log in to OCM before running a scan:
+
+```bash
+$ ocm login --use-auth-code --url=prd
+```
 
 ```bash
 # Scan all managed clusters, collecting namespace info with concurrency of 5
@@ -92,6 +97,18 @@ Each scan run creates a timestamped directory under the output directory contain
     "duration_seconds": 120.5
   }
   ```
+
+## Querying Output with jq
+
+`results.jsonl` is one JSON object per line, so [`jq`](https://jqlang.org/) is the easiest way to filter and summarize results without writing a script.
+
+```bash
+# Find clusters where a collector failed
+$ jq -c 'select(.status == "error")' run-<timestamp>/results.jsonl
+
+# Count clusters by minor version (x.y), ignoring the z patch digit
+$ jq -r '.version' run-<timestamp>/results.jsonl | cut -d. -f1,2 | sort | uniq -c | sort -rn
+```
 
 ## Available Collectors
 
